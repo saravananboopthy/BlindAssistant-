@@ -332,51 +332,54 @@ with col_info:
 # REAL-TIME DETECTION DISPLAY LOOP
 # ==========================================
 if ctx.state.playing:
-    while True:
-        if ctx.video_processor:
-            with ctx.video_processor._lock:
-                detections = ctx.video_processor.detection_counts.copy()
-            ctx.video_processor.confidence = confidence
+    if ctx.video_processor:
+        with ctx.video_processor._lock:
+            detections = ctx.video_processor.detection_counts.copy()
 
-            with detection_placeholder.container():
-                if detections:
+        ctx.video_processor.confidence = confidence
+
+        with detection_placeholder.container():
+            if detections:
+                for obj, count in detections.items():
+                    if obj in VEHICLE_OBJECTS:
+                        css_class = "danger"
+                        icon = "🚗"
+                    elif obj in WARNING_OBJECTS:
+                        css_class = "warn"
+                        icon = "⚠️"
+                    else:
+                        css_class = ""
+                        icon = "🟢"
+
+                    label = f"{count} {obj}s" if count > 1 else obj
+                    st.markdown(
+                        f"""<div class="det-item {css_class}">
+                        <span style="font-size:1.5rem">{icon}</span>
+                        <span style="font-weight:500;font-size:1rem">{label} ahead</span>
+                        </div>""",
+                        unsafe_allow_html=True,
+                    )
+
+                if voice_enabled:
+                    parts = []
                     for obj, count in detections.items():
-                        if obj in VEHICLE_OBJECTS:
-                            css_class = "danger"
-                            icon = "🚗"
-                        elif obj in WARNING_OBJECTS:
-                            css_class = "warn"
-                            icon = "⚠️"
-                        else:
-                            css_class = ""
-                            icon = "🟢"
+                        parts.append(
+                            f"{count} {obj}s ahead" if count > 1 else f"{obj} ahead"
+                        )
+                    speak_text = ", ".join(parts)
+                    browser_speak(speak_text, tts_placeholder)
 
-                        label = f"{count} {obj}s" if count > 1 else obj
-                        st.markdown(f"""<div class="det-item {css_class}">
-                            <span style="font-size:1.5rem">{icon}</span>
-                            <span style="font-weight:500;font-size:1rem">{label} ahead</span>
-                        </div>""", unsafe_allow_html=True)
+            else:
+                st.info("👀 No objects detected — point your camera at surroundings")
 
-                    # Voice alerts
-                    if voice_enabled:
-                        parts = []
-                        for obj, count in detections.items():
-                            parts.append(f"{count} {obj}s ahead" if count > 1 else f"{obj} ahead")
-                        speak_text = ", ".join(parts)
-                        browser_speak(speak_text, tts_placeholder)
-                else:
-                    st.info("👀 No objects detected — point your camera at surroundings")
-        else:
-            with detection_placeholder.container():
-                st.info("📷 Click **START** to begin camera detection")
-            break
-
-        time.sleep(0.5)
 else:
     with detection_placeholder.container():
-        st.markdown("""
+        st.markdown(
+            """
         <div class="metric-box">
             <div class="value">📷</div>
             <div class="label">Click START above to activate the camera</div>
         </div>
-        """, unsafe_allow_html=True)
+        """,
+            unsafe_allow_html=True,
+        )
