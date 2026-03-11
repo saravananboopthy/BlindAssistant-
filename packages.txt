@@ -1,7 +1,0 @@
-ffmpeg
-libgl1
-<<<<<<< HEAD
-libglib2.0-0
-=======
-libglib2.0-0
->>>>>>> 02a9717 (Remove unnecessary apt packages)
