@@ -2,6 +2,8 @@
 Blind Assistant - AI-Powered Vision & Navigation
 Streamlit web app with real-time YOLO object detection and Google Maps navigation.
 """
+import os
+os.environ["YOLO_CONFIG_DIR"] = "/tmp"
 
 import streamlit as st
 import streamlit.components.v1 as components
