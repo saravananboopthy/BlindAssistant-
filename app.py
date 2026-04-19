@@ -15,16 +15,26 @@ from ultralytics import YOLO
 from streamlit_geolocation import streamlit_geolocation
 
 # ==========================================
-# PAGE CONFIG
+# PAGE SETTINGS
 # ==========================================
 st.set_page_config(page_title="Blind Assistant", page_icon="👁️", layout="wide")
 
-# Session State for App Memory
-if "nav_steps" not in st.session_state:
-    st.session_state.update({"nav_steps": [], "nav_idx": 0, "nav_active": False, "last_nav": ""})
+st.markdown("""
+<style>
+.main-header { background: #1e293b; padding: 15px; border-radius: 12px; color: white; text-align: center; }
+.stButton>button { border-radius: 10px; font-weight: bold; }
+</style>
+""", unsafe_allow_html=True)
+
+# Session State for Continuous Tracking
+if "state" not in st.session_state:
+    st.session_state.state = {
+        "nav_steps": [], "nav_idx": 0, "active": False, 
+        "last_nav_msg": "", "obj_memory": {}, "run_camera": True
+    }
 
 # ==========================================
-# AI VISION ENGINE
+# VISION PROCESSOR
 # ==========================================
 @st.cache_resource
 def load_yolo(): return YOLO("yolov8n.pt")
@@ -49,13 +59,13 @@ class VisionProcessor(VideoProcessorBase):
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 # ==========================================
-# NAVIGATION CORE
+# HELPER FUNCTIONS
 # ==========================================
 def get_walking_directions(source, dest, api_key):
     try:
         gmaps = googlemaps.Client(key=api_key)
         res = gmaps.directions(source, dest, mode="walking")
-        if not res: return None, "No path found."
+        if not res: return None, "No route found."
         leg = res[0]["legs"][0]
         steps = []
         for s in leg["steps"]:
@@ -64,120 +74,126 @@ def get_walking_directions(source, dest, api_key):
         return steps, None
     except Exception as e: return None, str(e)
 
-# ==========================================
-# UI
-# ==========================================
-st.title("👁️ Blind Assistant")
+def calculate_dist(lat1, lon1, lat2, lon2):
+    R = 6371000
+    p1, p2 = math.radians(lat1), math.radians(lat2); dp, dl = math.radians(lat2-lat1), math.radians(lon2-lon1)
+    a = math.sin(dp/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2
+    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
-# Master Speech Data Holder
-active_voice_instruction = ""
-active_alert_instruction = ""
+# ==========================================
+# UI & TRACKING
+# ==========================================
+st.markdown('<div class="main-header"><h1>👁️ Blind Assistant</h1></div>', unsafe_allow_html=True)
 
-# Location
+# Data for JS Voice
+nav_instruction = ""
+alert_instruction = ""
+
+# GPS
 location = streamlit_geolocation()
 u_lat = location.get('latitude') if location else None
 u_lng = location.get('longitude') if location else None
 
-col_v, col_c = st.columns([2, 1])
+col_v, col_c = st.columns([1.5, 1])
 
 with col_v:
-    ctx = webrtc_streamer(
-        key="camera",
-        video_processor_factory=VisionProcessor,
-        rtc_configuration=RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}),
-        media_stream_constraints={"video": True, "audio": False}
-    )
+    if st.session_state.state["run_camera"]:
+        ctx = webrtc_streamer(
+            key="v_stream",
+            video_processor_factory=VisionProcessor,
+            rtc_configuration=RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}),
+            media_stream_constraints={"video": True, "audio": False}
+        )
+    else:
+        st.info("System Offline. Click Activate to restart.")
 
 with col_c:
-    st.subheader("Settings")
+    st.subheader("Navigation & Control")
     api_key = st.secrets.get("GOOGLE_MAPS_API_KEY", os.getenv("GOOGLE_MAPS_API_KEY", ""))
-    dest_in = st.text_input("Destination", placeholder="e.g. Hope College")
+    dest_in = st.text_input("Destination")
 
-    if st.button("🚀 START NAVIGATION", use_container_width=True):
-        if u_lat and api_key and dest_in:
-            data, err = get_walking_directions((u_lat, u_lng), dest_in, api_key)
-            if data:
-                st.session_state.update({"nav_steps": data, "nav_idx": 0, "nav_active": True})
-                active_voice_instruction = "Navigation started. " + data[0]['text']
-            else: st.error(err)
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🚀 ACTIVATE", use_container_width=True):
+            if u_lat and api_key and dest_in:
+                data, err = get_walking_directions((u_lat, u_lng), dest_in, api_key)
+                if data:
+                    st.session_state.state.update({"nav_steps": data, "nav_idx": 0, "active": True, "run_camera": True})
+                    nav_instruction = "Navigation started. " + data[0]['text']
+                else: st.error(err)
+    with c2:
+        if st.button("🛑 STOP", type="primary", use_container_width=True):
+            st.session_state.state.update({"active": False, "run_camera": False, "nav_steps": []})
+            st.rerun()
 
-    if st.session_state.nav_active:
-        steps = st.session_state.nav_steps
-        idx = st.session_state.nav_idx
+    # LIVE GPS PROGRESSION LOGIC
+    if st.session_state.state["active"] and u_lat:
+        steps = st.session_state.state["nav_steps"]
+        idx = st.session_state.state["nav_idx"]
+        
         if idx < len(steps):
-            step = steps[idx]
-            st.info(f"**Step {idx+1}:** {step['text']}")
-            if step['text'] != st.session_state.last_nav:
-                active_voice_instruction = step['text']
-                st.session_state.last_nav = step['text']
-                st.session_state.nav_idx += 1
+            cur_step = steps[idx]
+            dist = calculate_dist(u_lat, u_lng, cur_step['lat'], cur_step['lng'])
+            
+            st.success(f"**Target:** {cur_step['text']}")
+            st.metric("Distance to Turn", f"{dist:.1f} m")
+            
+            # If we are within 15m, advance to next step AND speak it
+            if dist < 15:
+                # Speak new instruction only once
+                if cur_step['text'] != st.session_state.state["last_nav_msg"]:
+                    nav_instruction = "Next: " + cur_step['text']
+                    st.session_state.state["last_nav_msg"] = cur_step['text']
+                
+                if st.session_state.state["nav_idx"] < len(steps) - 1:
+                    st.session_state.state["nav_idx"] += 1
         else:
-            active_voice_instruction = "Arrived at destination."
-            st.session_state.nav_active = False
+            nav_instruction = "Arrival."
+            st.session_state.state["active"] = False
 
     st.divider()
-    if ctx.video_processor:
+    if st.session_state.state["run_camera"] and ctx.video_processor:
         with ctx.video_processor.lock:
             objs = ctx.video_processor.detections.copy()
         if objs:
             st.write(", ".join(objs))
-            if "last_v_time" not in st.session_state: st.session_state.last_v_time = 0
-            if time.time() - st.session_state.last_v_time > 5:
-                active_alert_instruction = "I see " + " and ".join(objs[:2])
-                st.session_state.last_v_time = time.time()
+            now = time.time()
+            for o in objs:
+                # 15 second memory to prevent repetition
+                if o not in st.session_state.state["obj_memory"] or now - st.session_state.state["obj_memory"][o] > 15:
+                    alert_instruction = "Ahead: " + " and ".join(objs[:2])
+                    st.session_state.state["obj_memory"][o] = now
+                    break
 
 # ==========================================
-# PERSISTENT VOICE ENGINE (Fixed Logic)
+# MASTER PERSISTENT VOICE ENGINE
 # ==========================================
-# We use localStorage to remember the "Unlock" even if the iframe rerenders
-voice_hub_json = json.dumps({"nav": active_voice_instruction, "alert": active_alert_instruction})
+voice_hub = json.dumps({"nav": nav_instruction, "alert": alert_instruction})
 
 components.html(f"""
-    <div style="background:#fef2f2; border:2px solid #ef4444; padding:15px; border-radius:12px; text-align:center;">
-        <button id="ubtn" onclick="unlock()" style="background:#ef4444; color:white; border:none; padding:12px; border-radius:8px; cursor:pointer; font-weight:bold; width:100%; font-size:16px;">
+    <div style="background:#fef2f2; border:1px solid #ef4444; padding:10px; border-radius:10px; text-align:center;">
+        <button id="vbtn" onclick="lck()" style="background:#ef4444; color:white; border:none; padding:8px; border-radius:5px; cursor:pointer; font-weight:bold; width:100%;">
             🔊 TAP TO RE-ENABLE VOICE 🚨
         </button>
-        <div id="status" style="margin-top:8px; font-size:12px; color:#ef4444;">Voice status: Monitoring...</div>
     </div>
     <script>
-    const data = {voice_hub_json};
-    
-    function unlock() {{
-        localStorage.setItem('blind_voice_unlocked', 'true');
-        updateUI();
-        speak("Voice confirmed. Standing by.");
-    }}
-
-    function updateUI() {{
-        if(localStorage.getItem('blind_voice_unlocked') === 'true') {{
-            let b = document.getElementById('ubtn');
-            b.style.background = "#10b981";
-            b.innerText = "✔️ VOICE ACTIVE";
-            document.getElementById('status').innerText = "AI Assistant Live";
-            document.getElementById('status').style.color = "#10b981";
-        }}
-    }}
-
+    const vdata = {voice_hub};
+    function lck() {{ localStorage.setItem('v_unlocked', 'true'); update(); speak("Assistant Ready."); }}
+    function update() {{ if(localStorage.getItem('v_unlocked') === 'true') {{ let b = document.getElementById('vbtn'); b.style.background = "#10b981"; b.innerText = "✔️ VOICE ACTIVE"; }} }}
     function speak(t) {{
-        if(localStorage.getItem('blind_voice_unlocked') !== 'true') return;
+        if(localStorage.getItem('v_unlocked') !== 'true') return;
         window.speechSynthesis.cancel();
-        let u = new SpeechSynthesisUtterance(t);
-        u.rate = 1.0;
+        let u = new SpeechSynthesisUtterance(t); u.rate = 1.0;
         window.speechSynthesis.speak(u);
     }}
-
-    // Check memory and speak if needed
-    updateUI();
-    if (data.nav || data.alert) {{
-        // Use a hash to avoid repeating the exact same message within the same iframe life
-        const hash = data.nav + data.alert;
-        if(window.lastH !== hash) {{
-            speak(data.nav + " " + data.alert);
-            window.lastH = hash;
-        }}
+    update();
+    if (vdata.nav || vdata.alert) {{
+        const h = vdata.nav + vdata.alert;
+        if(window.lastH !== h) {{ speak(vdata.nav + " " + vdata.alert); window.lastH = h; }}
     }}
     </script>
-""", height=120)
+""", height=80)
 
-time.sleep(1.5)
-st.rerun()
+if st.session_state.state["active"] or st.session_state.state["run_camera"]:
+    time.sleep(1.5)
+    st.rerun()
