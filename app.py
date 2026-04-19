@@ -19,50 +19,44 @@ from ultralytics import YOLO
 # ==========================================
 st.set_page_config(page_title="Blind Assistant", page_icon="👁️", layout="wide")
 
-# Refresh the UI every second to check GPS/Objects (without restarting camera)
-st_autorefresh(interval=1000, key="nav_refresh")
+# Stabilized Page Refresh (1 second)
+st_autorefresh(interval=1000, key="global_nav_refresh")
 
-# Session State Initialization
+# Session State
 if "nav_steps" not in st.session_state:
     st.session_state.update({
-        "nav_steps": [], 
-        "nav_idx": 0, 
-        "nav_active": False, 
-        "last_nav": "",
-        "detected_memory": {}
+        "nav_steps": [], "nav_idx": 0, "nav_active": False, 
+        "last_nav": "", "detected_memory": {}
     })
 
 # ==========================================
-# SPEECH ENGINE
+# STABLE SPEECH ENGINE
 # ==========================================
 def speak(text):
-    # Unique ID as a string ensures no typing errors on the Cloud
-    unique_id = str(int(time.time() * 1000))
+    # Fixed key and height for Streamlit Cloud compatibility
     components.html(f"""
         <script>
         var msg = new SpeechSynthesisUtterance("{text}");
-        msg.rate = 1.0;
+        window.speechSynthesis.cancel(); // Clears queue to prevent lag
         window.speechSynthesis.speak(msg);
         </script>
-    """, height=0, key=f"speak_{unique_id}")
+    """, height=1)
 
 # ==========================================
-# NAVIGATION LOGIC
+# NAVIGATION CORE
 # ==========================================
 def get_walking_directions(source, dest, api_key):
     try:
         gmaps = googlemaps.Client(key=api_key)
         res = gmaps.directions(source, dest, mode="walking")
-        if not res: return None, "No route found."
-        
+        if not res: return None, "No path found."
         leg = res[0]["legs"][0]
         steps = []
         for s in leg["steps"]:
             instr = re.sub(r"<.*?>", "", s["html_instructions"]).replace("&nbsp;", " ").strip()
             steps.append({
                 "text": f"{instr} for {s['distance']['text']}",
-                "lat": s["end_location"]["lat"],
-                "lng": s["end_location"]["lng"]
+                "lat": s["end_location"]["lat"], "lng": s["end_location"]["lng"]
             })
         return steps, None
     except Exception as e: return None, str(e)
@@ -75,12 +69,10 @@ def calculate_dist(lat1, lon1, lat2, lon2):
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
 # ==========================================
-# VISION PROCESSOR
+# AI VISION
 # ==========================================
 @st.cache_resource
-def load_yolo():
-    return YOLO("yolov8n.pt")
-
+def load_yolo(): return YOLO("yolov8n.pt")
 model = load_yolo()
 
 class VisionProcessor(VideoProcessorBase):
@@ -95,11 +87,10 @@ class VisionProcessor(VideoProcessorBase):
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 # ==========================================
-# UI
+# UI DESIGN
 # ==========================================
 st.title("👁️ Blind Assistant")
 
-# GPS TRACKER
 location = streamlit_geolocation()
 u_lat = location.get('latitude') if location else None
 u_lng = location.get('longitude') if location else None
@@ -115,8 +106,7 @@ with col1:
     )
 
 with col2:
-    st.subheader("🧭 Navigation")
-    if u_lat: st.success(f"GPS Connected")
+    st.subheader("🧭 Path Navigation")
     
     # Auto-load API from secrets
     default_api = os.getenv("GOOGLE_MAPS_API_KEY", "")
@@ -143,7 +133,6 @@ with col2:
         if curr < len(steps):
             step = steps[curr]
             st.info(f"Step {curr+1}: {step['text']}")
-            # Auto-Nav speech logic
             if u_lat:
                 dist = calculate_dist(u_lat, u_lng, step['lat'], step['lng'])
                 if dist <= 20 and step['text'] != st.session_state.last_nav:
@@ -151,11 +140,10 @@ with col2:
                     st.session_state.last_nav = step['text']
                     st.session_state.nav_idx += 1
         else:
-            speak("Arrived")
-            st.success("Destination reached")
+            st.success("Arrived")
             st.session_state.nav_active = False
 
-    st.subheader("🎯 Objects Nearby")
+    st.subheader("🎯 Active Detections")
     if ctx.video_processor:
         with ctx.video_processor.lock:
             objs = ctx.video_processor.detections.copy()
