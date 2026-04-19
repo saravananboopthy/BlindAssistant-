@@ -137,14 +137,19 @@ with col_c:
             st.success(f"**Action:** {cur_step['text']}")
             
             now = time.time()
-            if dist < 12 and (now - st.session_state.state["last_nav_time"]) > 15:
-                # Use ONLY the short place name for speech
+            
+            # 1) Speak the navigation instruction if it hasn't been spoken yet
+            if cur_step['text'] != st.session_state.state["last_nav_msg"]:
                 nav_instruction = cur_step['speech']
+                st.session_state.state["last_nav_msg"] = cur_step['text']
+                st.session_state.state["last_nav_time"] = now
+                
+            # 2) Live GPS advance logic: Check if we arrived at the current step's physical location
+            elif dist < 12 and (now - st.session_state.state["last_nav_time"]) > 15:
                 if st.session_state.state["nav_idx"] < len(steps) - 1:
                     st.session_state.state["nav_idx"] += 1
-                    st.session_state.state["last_nav_time"] = now
                 else:
-                    nav_instruction = "Arrived at " + cur_step['speech']
+                    nav_instruction = "Arrived at destination"
                     st.session_state.state["active"] = False
 
     st.divider()
@@ -156,7 +161,7 @@ with col_c:
             now = time.time()
             for o in objs:
                 tag = f"{o['label']}_{o['pos']}"
-                # Universal 15-second cooldown to stop repetitive announcements
+                # Universal strict 15-second cooldown
                 if tag not in st.session_state.state["obj_memory"] or now - st.session_state.state["obj_memory"][tag] > 15:
                     alert_instruction = f"I see {o['label']} {o['pos']}"
                     st.session_state.state["obj_memory"][tag] = now
