@@ -8,3 +8,4 @@ googlemaps
 python-dotenv
 requests
 Pillow
+streamlit-geolocation
