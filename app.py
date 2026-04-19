@@ -113,7 +113,7 @@ js_code = f"""
     }}
     </script>
 """
-components.html(js_code, height=60, key="voice_controller")
+components.html(js_code, height=60)
 
 with col_i:
     st.subheader("Navigation")
