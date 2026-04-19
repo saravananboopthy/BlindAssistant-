@@ -75,7 +75,7 @@ components.html(f"""
             }}, '*');
         }}, (err) => {{ console.error("Loc Error", err); }}, {{ enableHighAccuracy: true }});
     }}
-    setInterval(sendLoc, 20000); // Pulse every 20s
+    setInterval(sendLoc, 10000); // Pulse every 10s
     sendLoc();
 
     // 2. WEB SPEECH FOR DESTINATION
@@ -125,8 +125,8 @@ if st.query_params.get("dest"):
 @st.cache_resource
 def load_yolo():
     try:
-        # This will automatically download the model if not found
-        return YOLO("yolov8n.pt")
+        # Upgraded to 'Small' for much better accuracy
+        return YOLO("yolov8s.pt")
     except Exception as e:
         st.error(f"AI Engine Initialization Failed: {e}")
         return None
@@ -137,8 +137,8 @@ def browser_speak(text):
     if text and text != st.session_state.last_spoken:
         st.session_state.speak_now = text
         st.session_state.last_spoken = text
-        # We need a tiny delay before rerun to ensure the component can catch the state
-        time.sleep(0.5)
+        # Faster trigger for voice feedback
+        time.sleep(0.2)
         st.rerun()
 
 # ==========================================
@@ -283,6 +283,6 @@ if webrtc_ctx.video_processor and st.session_state.engine_active:
         else:
             st.write("Checking...")
 
-    # Pulse rate for AI Engine
-    time.sleep(1.5)
+    # Fast polling for better responsiveness
+    time.sleep(0.8)
     st.rerun()
