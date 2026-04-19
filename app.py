@@ -26,11 +26,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Session State for Continuous Tracking
+# Persistent State
 if "state" not in st.session_state:
     st.session_state.state = {
         "nav_steps": [], "nav_idx": 0, "active": False, 
-        "last_nav_msg": "", "obj_memory": {}, "run_camera": True
+        "last_nav_msg": "", "obj_memory": {}, "run_camera": True,
+        "last_nav_time": 0
     }
 
 # ==========================================
@@ -53,13 +54,14 @@ class VisionProcessor(VideoProcessorBase):
             x1, y1, x2, y2 = map(int, b.xyxy[0])
             label = model.names[int(b.cls[0])]
             pos = "left" if (x1+x2)/2 < w*0.33 else "right" if (x1+x2)/2 > w*0.66 else "ahead"
-            now.append(f"{label} {pos}")
+            dist = "near" if (x2-x1) > 280 else "far"
+            now.append({"label": label, "pos": pos, "dist": dist})
             cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
         with self.lock: self.detections = now
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 # ==========================================
-# HELPER FUNCTIONS
+# NAVIGATION LOGIC
 # ==========================================
 def get_walking_directions(source, dest, api_key):
     try:
@@ -81,15 +83,13 @@ def calculate_dist(lat1, lon1, lat2, lon2):
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
 # ==========================================
-# UI & TRACKING
+# UI
 # ==========================================
 st.markdown('<div class="main-header"><h1>👁️ Blind Assistant</h1></div>', unsafe_allow_html=True)
 
-# Data for JS Voice
 nav_instruction = ""
 alert_instruction = ""
 
-# GPS
 location = streamlit_geolocation()
 u_lat = location.get('latitude') if location else None
 u_lng = location.get('longitude') if location else None
@@ -104,13 +104,11 @@ with col_v:
             rtc_configuration=RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}),
             media_stream_constraints={"video": True, "audio": False}
         )
-    else:
-        st.info("System Offline. Click Activate to restart.")
 
 with col_c:
-    st.subheader("Navigation & Control")
+    st.subheader("Control Center")
     api_key = st.secrets.get("GOOGLE_MAPS_API_KEY", os.getenv("GOOGLE_MAPS_API_KEY", ""))
-    dest_in = st.text_input("Destination")
+    dest_in = st.text_input("Destination", placeholder="e.g. Hope College")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -118,15 +116,15 @@ with col_c:
             if u_lat and api_key and dest_in:
                 data, err = get_walking_directions((u_lat, u_lng), dest_in, api_key)
                 if data:
-                    st.session_state.state.update({"nav_steps": data, "nav_idx": 0, "active": True, "run_camera": True})
-                    nav_instruction = "Navigation started. " + data[0]['text']
+                    st.session_state.state.update({"nav_steps": data, "nav_idx": 0, "active": True, "run_camera": True, "last_nav_msg": ""})
+                    nav_instruction = "Starting. Walk to: " + data[0]['text']
                 else: st.error(err)
     with c2:
         if st.button("🛑 STOP", type="primary", use_container_width=True):
-            st.session_state.state.update({"active": False, "run_camera": False, "nav_steps": []})
+            st.session_state.state.update({"active": False, "run_camera": False, "nav_steps": [], "nav_idx": 0})
             st.rerun()
 
-    # LIVE GPS PROGRESSION LOGIC
+    # LIVE GPS PROGRESSION (FIXED CASCADE)
     if st.session_state.state["active"] and u_lat:
         steps = st.session_state.state["nav_steps"]
         idx = st.session_state.state["nav_idx"]
@@ -134,35 +132,43 @@ with col_c:
         if idx < len(steps):
             cur_step = steps[idx]
             dist = calculate_dist(u_lat, u_lng, cur_step['lat'], cur_step['lng'])
-            
-            st.success(f"**Target:** {cur_step['text']}")
+            st.success(f"**Step {idx+1}:** {cur_step['text']}")
             st.metric("Distance to Turn", f"{dist:.1f} m")
             
-            # If we are within 15m, advance to next step AND speak it
-            if dist < 15:
-                # Speak new instruction only once
-                if cur_step['text'] != st.session_state.state["last_nav_msg"]:
-                    nav_instruction = "Next: " + cur_step['text']
-                    st.session_state.state["last_nav_msg"] = cur_step['text']
-                
+            # ADVANCE ONLY IF:
+            # 1. We are within 10 meters AND
+            # 2. At least 15 seconds passed since last step (prevents cascading)
+            now = time.time()
+            if dist < 10 and (now - st.session_state.state["last_nav_time"]) > 15:
                 if st.session_state.state["nav_idx"] < len(steps) - 1:
                     st.session_state.state["nav_idx"] += 1
+                    next_step = steps[st.session_state.state["nav_idx"]]
+                    nav_instruction = "Now, " + next_step['text']
+                    st.session_state.state["last_nav_time"] = now
+                else:
+                    nav_instruction = "Arrived at destination."
+                    st.session_state.state["active"] = False
         else:
-            nav_instruction = "Arrival."
-            st.session_state.state["active"] = False
+            st.info("Goal reached.")
 
     st.divider()
     if st.session_state.state["run_camera"] and ctx.video_processor:
         with ctx.video_processor.lock:
             objs = ctx.video_processor.detections.copy()
+        
         if objs:
-            st.write(", ".join(objs))
+            st.write(", ".join([f"{o['label']} {o['pos']}" for o in objs]))
             now = time.time()
             for o in objs:
-                # 15 second memory to prevent repetition
-                if o not in st.session_state.state["obj_memory"] or now - st.session_state.state["obj_memory"][o] > 15:
-                    alert_instruction = "Ahead: " + " and ".join(objs[:2])
-                    st.session_state.state["obj_memory"][o] = now
+                tag = f"{o['label']}_{o['pos']}"
+                # PRIORITY for near objects (immediate warning)
+                is_near = (o['dist'] == 'near')
+                cooldown = 3 if is_near else 15
+                
+                if tag not in st.session_state.state["obj_memory"] or now - st.session_state.state["obj_memory"][tag] > cooldown:
+                    prefix = "Danger! " if is_near else "I see "
+                    alert_instruction = prefix + f"{o['label']} {o['pos']}"
+                    st.session_state.state["obj_memory"][tag] = now
                     break
 
 # ==========================================
@@ -178,7 +184,7 @@ components.html(f"""
     </div>
     <script>
     const vdata = {voice_hub};
-    function lck() {{ localStorage.setItem('v_unlocked', 'true'); update(); speak("Assistant Ready."); }}
+    function lck() {{ localStorage.setItem('v_unlocked', 'true'); update(); speak("Assistant Online."); }}
     function update() {{ if(localStorage.getItem('v_unlocked') === 'true') {{ let b = document.getElementById('vbtn'); b.style.background = "#10b981"; b.innerText = "✔️ VOICE ACTIVE"; }} }}
     function speak(t) {{
         if(localStorage.getItem('v_unlocked') !== 'true') return;
@@ -188,12 +194,12 @@ components.html(f"""
     }}
     update();
     if (vdata.nav || vdata.alert) {{
-        const h = vdata.nav + vdata.alert;
-        if(window.lastH !== h) {{ speak(vdata.nav + " " + vdata.alert); window.lastH = h; }}
+        const h = vdata.nav + vdata.alert + Date.now(); // Date.now ensures fresh execution
+        if(window.lastH !== vdata.nav + vdata.alert) {{ speak(vdata.nav + " " + vdata.alert); window.lastH = vdata.nav + vdata.alert; }}
     }}
     </script>
 """, height=80)
 
 if st.session_state.state["active"] or st.session_state.state["run_camera"]:
-    time.sleep(1.5)
+    time.sleep(1.2)
     st.rerun()
