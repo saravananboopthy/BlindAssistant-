@@ -43,7 +43,7 @@ def load_model():
 model = load_model()
 
 # ==========================================
-# NAVIGATION LOGIC (Merged)
+# NAVIGATION LOGIC
 # ==========================================
 def clean_html(text):
     return re.sub(r"<.*?>", "", text).replace("&nbsp;", " ").strip()
@@ -54,20 +54,17 @@ def get_walking_directions(source, dest, api_key):
         gmaps = googlemaps.Client(key=api_key)
         res = gmaps.directions(source, dest, mode="walking")
         if not res: return None, "No walking route found."
-        
         leg = res[0]["legs"][0]
         steps = []
         for s in leg["steps"]:
             instr = clean_html(s["html_instructions"])
-            dist = s["distance"]["value"]
             steps.append({
                 "text": f"{instr} for {s['distance']['text']}",
                 "lat": s["end_location"]["lat"],
-                "lng": s["end_location"]["lng"],
-                "dist": dist
+                "lng": s["end_location"]["lng"]
             })
         return steps, None
-    except Exception as e: return None, f"Navigation error: {str(e)}"
+    except Exception as e: return None, str(e)
 
 # ==========================================
 # VISION PROCESSOR
@@ -86,17 +83,11 @@ class BlindProcessor(VideoProcessorBase):
             for box in results.boxes:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 label = model.names[int(box.cls[0])]
-                
                 pos = "left" if (x1+x2)/2 < w*0.33 else "right" if (x1+x2)/2 > w*0.66 else "ahead"
                 dist = "near" if (x2-x1) > 280 else "far"
-                
                 detected.append({"label": label, "pos": pos, "dist": dist})
-                
                 cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(img, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            
-            with self.lock:
-                self.detections = detected
+            with self.lock: self.detections = detected
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 # ==========================================
@@ -104,28 +95,31 @@ class BlindProcessor(VideoProcessorBase):
 # ==========================================
 st.markdown('<div class="main-header"><h1>👁️ Blind Assistant</h1></div>', unsafe_allow_html=True)
 
-# Important: components.declare_component MUST be called to enable persistent voice
 my_voice_engine = components.declare_component("my_voice_engine", path="voice_engine")
-
 location = streamlit_geolocation()
 user_lat = location.get('latitude') if location else None
 user_lng = location.get('longitude') if location else None
 
 col_v, col_i = st.columns([1.5, 1])
 
-# DATA GATHERING for the background engine
 current_detections = []
-
-# Ensure lat/lng are passed as numbers or null
 p_lat = float(user_lat) if user_lat else None
 p_lng = float(user_lng) if user_lng else None
 
-if ctx.video_processor:
-    st.session_state.engine_active = st.toggle("Activate AI Voice Engine", value=st.session_state.engine_active)
-    with ctx.video_processor.lock:
-        current_detections = ctx.video_processor.detections.copy()
+with col_v:
+    ctx = webrtc_streamer(
+        key="camera",
+        video_processor_factory=BlindProcessor,
+        rtc_configuration=RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}),
+        media_stream_constraints={"video": True, "audio": False},
+        async_processing=True
+    )
+    if ctx.video_processor:
+        st.session_state.engine_active = st.toggle("Activate AI Voice Engine", value=st.session_state.engine_active)
+        with ctx.video_processor.lock:
+            current_detections = ctx.video_processor.detections.copy()
 
-# RENDER THE GLOBAL VOICE ENGINE - Passes state to JS for persistent TTS & Navigation
+# RENDER MASTER ENGINE
 my_voice_engine(
     detections=current_detections,
     nav_steps=st.session_state.nav_steps,
@@ -137,14 +131,12 @@ my_voice_engine(
 
 with col_i:
     st.subheader("📍 Sensors & Path")
-    if user_lat: st.success(f"GPS Active: {user_lat:.4f}, {user_lng:.4f}")
+    if user_lat: st.success(f"GPS Locked: {user_lat:.4f}, {user_lng:.4f}")
     else: st.warning("Allow GPS (Click crosshair)")
 
-    # Autoload API Key
     default_api = os.getenv("GOOGLE_MAPS_API_KEY", "")
     try:
-        if st.secrets.get("GOOGLE_MAPS_API_KEY"):
-            default_api = st.secrets["GOOGLE_MAPS_API_KEY"]
+        if st.secrets.get("GOOGLE_MAPS_API_KEY"): default_api = st.secrets["GOOGLE_MAPS_API_KEY"]
     except: pass
     
     api = st.text_input("G-Maps Key", value=default_api, type="password")
@@ -156,24 +148,21 @@ with col_i:
             steps, error = get_walking_directions(source, dest_in, api)
             if steps:
                 st.session_state.update({"nav_steps": steps, "nav_idx": 0})
-                st.success("Route Found! Voice Guide ON.")
+                st.success("Route Found!")
             else: st.error(error)
 
     if st.session_state.nav_steps:
         idx = st.session_state.nav_idx
         st.info(f"**Step {idx+1}:** {st.session_state.nav_steps[idx]['text']}")
-        if st.button("Next Step ➡"):
+        if st.button("Next Step"):
             if st.session_state.nav_idx < len(st.session_state.nav_steps)-1:
                 st.session_state.nav_idx += 1
                 st.rerun()
 
     st.subheader("🎯 Live Detections")
-    if current_detections:
-        for d in current_detections:
-            st.markdown(f'<div class="det-card {"danger" if d["dist"]=="near" else ""}">{d["label"].upper()} {d["pos"]}</div>', unsafe_allow_html=True)
-    else: st.write("Scanning...")
+    for d in current_detections:
+        st.markdown(f'<div class="det-card {"danger" if d["dist"]=="near" else ""}">{d["label"].upper()} {d["pos"]}</div>', unsafe_allow_html=True)
 
-# Keeping streamlit alive for UI updates
 if st.session_state.engine_active:
     time.sleep(1)
     st.rerun()
