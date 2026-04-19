@@ -14,6 +14,14 @@ window.currentLng = null;
 window.currentSteps = [];
 window.lastNavSpeak = 0;
 
+function updateStatus(msg, color='#666') {
+    let el = document.getElementById("gps-tracker");
+    if(el) {
+        el.innerText = msg;
+        el.style.color = color;
+    }
+}
+
 function calculateDistance(lat1, lon1, lat2, lon2) {
     let R = 6371e3; let p1 = lat1 * Math.PI/180; let p2 = lat2 * Math.PI/180;
     let dp = (lat2-lat1) * Math.PI/180; let dl = (lon2-lon1) * Math.PI/180;
@@ -22,23 +30,30 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
 }
 
 function unlockVoice() {
-    window.voiceUnlocked = true;
-    speak("Voice Unlocked.", true);
-    let btn = document.getElementById("unlock-btn");
-    if(btn) btn.style.display = 'none';
-    let gps = document.getElementById("gps-tracker");
-    if(gps) gps.style.display = 'block';
-    
-    // Start GPS Tracking only after unlock to save battery
-    navigator.geolocation.watchPosition((p) => {
-        window.currentLat = p.coords.latitude;
-        window.currentLng = p.coords.longitude;
-        let text = document.getElementById("gps-tracker");
-        if(text) text.innerText = "Live GPS Active: " + p.coords.latitude.toFixed(4) + ", " + p.coords.longitude.toFixed(4);
-    }, (e) => {
-        let text = document.getElementById("gps-tracker");
-        if(text) text.innerText = "GPS Error: " + e.message;
-    }, {enableHighAccuracy: true });
+    try {
+        window.voiceUnlocked = true;
+        // Prime the engine with a silent/brief utterance
+        const p = new SpeechSynthesisUtterance("Assistant Active");
+        p.volume = 0; // Silent prime
+        window.speechSynthesis.speak(p);
+        
+        // Real welcome message
+        setTimeout(() => speak("Voice Assistant Unlocked. Checking sensors.", true), 100);
+
+        document.getElementById("unlock-btn").style.display = 'none';
+        document.getElementById("gps-tracker").style.display = 'block';
+        updateStatus("GPS: Seeking signal...");
+        
+        navigator.geolocation.watchPosition((p) => {
+            window.currentLat = p.coords.latitude;
+            window.currentLng = p.coords.longitude;
+            updateStatus("GPS Live: " + p.coords.latitude.toFixed(4) + ", " + p.coords.longitude.toFixed(4), "#00d4aa");
+        }, (e) => {
+            updateStatus("GPS Error: " + e.message, "#ff6b6b");
+        }, {enableHighAccuracy: true });
+    } catch(e) {
+        alert("Audio Init Error: " + e.message);
+    }
 }
 
 window.unlockVoice = unlockVoice;
