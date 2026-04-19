@@ -73,9 +73,11 @@ components.html(f"""
                 type: 'streamlit:set_query_params', 
                 queryParams: {{ lat: lat.toFixed(6), lng: lng.toFixed(6) }} 
             }}, '*');
-        }}, (err) => {{ console.error("Loc Error", err); }}, {{ enableHighAccuracy: true }});
+        }}, (err) => {{ 
+            console.error("GPS Error:", err.message);
+        }}, {{ enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }});
     }}
-    setInterval(sendLoc, 10000); // Pulse every 10s
+    setInterval(sendLoc, 8000); 
     sendLoc();
 
     // 2. WEB SPEECH FOR DESTINATION
@@ -93,22 +95,17 @@ components.html(f"""
             const text = e.results[0][0].transcript;
             status.innerText = "Found: " + text;
             micBtn.style.background = "#667eea";
-            window.parent.postMessage({{ 
-                type: 'streamlit:set_query_params', 
-                queryParams: {{ dest: text }} 
-            }}, '*');
+            window.parent.postMessage({{ type: 'streamlit:set_query_params', queryParams: {{ dest: text }} }}, '*');
         }};
-        recognition.onerror = () => {{ status.innerText = "Error!"; micBtn.style.background = "#667eea"; }};
     }}
 
-    // 3. PERSISTENT TEXT-TO-SPEECH
+    // 3. SECURE TEXT-TO-SPEECH (No Cut-off)
     var msg = "{msg_to_speak}";
-    if (msg && window.parent.lastSpoke !== msg) {{
-        window.speechSynthesis.cancel();
+    if (msg && window.lastPlayedMsg !== msg) {{
         var u = new SpeechSynthesisUtterance(msg);
-        u.rate = 0.75;
+        u.rate = 0.8;
         window.speechSynthesis.speak(u);
-        window.parent.lastSpoke = msg;
+        window.lastPlayedMsg = msg;
     }}
     </script>
 """, height=70)
@@ -125,8 +122,8 @@ if st.query_params.get("dest"):
 @st.cache_resource
 def load_yolo():
     try:
-        # Upgraded to 'Small' for much better accuracy
-        return YOLO("yolov8s.pt")
+        # Reverted to Nano (fastest) to ensure no lag in cloud environment
+        return YOLO("yolov8n.pt")
     except Exception as e:
         st.error(f"AI Engine Initialization Failed: {e}")
         return None
@@ -283,6 +280,6 @@ if webrtc_ctx.video_processor and st.session_state.engine_active:
         else:
             st.write("Checking...")
 
-    # Fast polling for better responsiveness
-    time.sleep(0.8)
+    # Faster refresh for near-instant response
+    time.sleep(0.5)
     st.rerun()
