@@ -156,15 +156,14 @@ with col_c:
             now = time.time()
             for o in objs:
                 tag = f"{o['label']}_{o['pos']}"
-                is_near = (o['dist'] == 'near')
-                cooldown = 4 if is_near else 15
-                if tag not in st.session_state.state["obj_memory"] or now - st.session_state.state["obj_memory"][tag] > cooldown:
-                    alert_instruction = ("Danger! " if is_near else "Look out! ") + f"{o['label']} {o['pos']}"
+                # Universal 15-second cooldown to stop repetitive announcements
+                if tag not in st.session_state.state["obj_memory"] or now - st.session_state.state["obj_memory"][tag] > 15:
+                    alert_instruction = f"I see {o['label']} {o['pos']}"
                     st.session_state.state["obj_memory"][tag] = now
                     break
 
 # ==========================================
-# MASTER SYNC VOICE QUEUE (No Mixing)
+# MASTER SYNC VOICE QUEUE
 # ==========================================
 voice_hub = json.dumps({"nav": nav_instruction, "alert": alert_instruction})
 
@@ -176,25 +175,30 @@ components.html(f"""
     </div>
     <script>
     const vdata = {voice_hub};
-    function lck() {{ localStorage.setItem('v_unlocked', 'true'); update(); speak("Brain synchronized. Queuing offline."); }}
+    function lck() {{ localStorage.setItem('v_unlocked', 'true'); update(); speak("Brain synchronized. Ready."); }}
     function update() {{ if(localStorage.getItem('v_unlocked') === 'true') {{ let b = document.getElementById('vbtn'); b.style.background = "#10b981"; b.innerText = "✔️ VOICE SYNCED"; }} }}
     
     function speak(t) {{
         if(localStorage.getItem('v_unlocked') !== 'true') return;
-        // NO CANCEL: This creates a queue (Talk 1, then Talk 2)
+        window.speechSynthesis.cancel(); // Cancel to avoid long backlogs
         let u = new SpeechSynthesisUtterance(t);
-        u.rate = 0.95; // Slightly slower for clarity
+        u.rate = 0.95; 
         window.speechSynthesis.speak(u);
     }}
     
     update();
     if (vdata.nav || vdata.alert) {{
-        const h = vdata.nav + vdata.alert + Date.now();
-        if(window.lastH !== vdata.nav + vdata.alert) {{
-            // ALWAYS speak navigation first, then alert
-            if(vdata.nav) speak(vdata.nav);
-            if(vdata.alert) speak(vdata.alert);
-            window.lastH = vdata.nav + vdata.alert;
+        const h = vdata.nav + "|" + vdata.alert;
+        if(window.lastH !== h) {{
+            // Combine both messages into ONE fluid sentence to prevent cut-offs
+            let final_message = "";
+            if (vdata.nav) final_message += vdata.nav + ". ";
+            if (vdata.alert) final_message += vdata.alert + ".";
+            
+            if (final_message.trim() !== "") {{
+                speak(final_message.trim());
+            }}
+            window.lastH = h;
         }}
     }}
     </script>
