@@ -75,162 +75,31 @@ with stat_col:
         st.error("**GPS Status:** Click the crosshair icon to lock your Starting Location")
 
 # ==============================================================================
-# JAVASCRIPT MASTER ENGINE (Handles Auto-Navigation and Throttled Voice without Page Reloads)
+# JAVASCRIPT MASTER ENGINE (Official Streamlit Component Wrapper)
 # ==============================================================================
-MASTER_ENGINE = """
-<script>
-if (!window.masterEngineRunning) {
-    window.masterEngineRunning = true;
-    window.lastSpeakStr = "";
-    window.lastSpeakTime = 0;
-    window.currentLat = null;
-    window.currentLng = null;
-    window.lastNavSpeak = 0;
-    window.navStarted = false;
-    window.currentRouteHash = "";
-    window.audioUnlocked = false; // Prevents browser blocking
-    
-    // Auto-Tracking GPS for Navigation
-    navigator.geolocation.watchPosition(
-        (p) => { 
-            window.currentLat = p.coords.latitude; 
-            window.currentLng = p.coords.longitude; 
-            if (document.getElementById('gps-tracker')) document.getElementById('gps-tracker').innerText = "Live GPS Tracking: Active";
-        },
-        (e) => { 
-            if (document.getElementById('gps-tracker')) document.getElementById('gps-tracker').innerText = "GPS Error: " + e.message; 
-        },
-        { enableHighAccuracy: true, maximumAge: 0 }
-    );
-
-    window.unlockVoice = function() {
-        window.audioUnlocked = true;
-        let u = new SpeechSynthesisUtterance("Voice Assistant Enabled.");
-        u.rate = 0.9;
-        window.speechSynthesis.speak(u);
-        document.getElementById('unlock-btn').style.display = 'none';
-        document.getElementById('gps-tracker').style.display = 'block';
-    }
-
-    function speak(text, prio=false) {
-        if (!window.audioUnlocked) return; // Browser will block if not explicitly unlocked
-        if (window.speechSynthesis.speaking && !prio) return;
-        if (prio) window.speechSynthesis.cancel();
-        let u = new SpeechSynthesisUtterance(text);
-        u.rate = 0.9;
-        window.speechSynthesis.speak(u);
-    }
-
-    function calculateDistance(lat1, lon1, lat2, lon2) {
-        let R = 6371e3;
-        let p1 = lat1 * Math.PI/180, p2 = lat2 * Math.PI/180;
-        let dp = (lat2-lat1) * Math.PI/180, dl = (lon2-lon1) * Math.PI/180;
-        let a = Math.sin(dp/2) * Math.sin(dp/2) + Math.cos(p1) * Math.cos(p2) * Math.sin(dl/2) * Math.sin(dl/2);
-        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-    }
-
-    setInterval(() => {
-        let rawSteps = localStorage.getItem('nav_steps') || "[]";
-        let steps = JSON.parse(rawSteps);
-        let idx = parseInt(localStorage.getItem('nav_idx') || "0");
-        let engineActive = localStorage.getItem('engine_active') === 'true';
-
-        // 1. Navigation Logic (Auto Progress)
-        if (rawSteps !== window.currentRouteHash && steps.length > 0) {
-            window.currentRouteHash = rawSteps;
-            window.navStarted = true;
-            window.lastNavSpeak = Date.now();
-            speak("Route found. Start moving. " + steps[0].text, true);
-        }
-
-        if (steps.length > 0 && window.currentLat && idx < steps.length) {
-            let t = steps[idx];
-            let dist = calculateDistance(window.currentLat, window.currentLng, t.lat, t.lng);
-            
-            // Remind every 30 seconds
-            if (Date.now() - window.lastNavSpeak > 30000) {
-                speak("Continue: " + t.text);
-                window.lastNavSpeak = Date.now();
-            }
-
-            // Move to Next Step
-            if (dist < 15) {
-                idx++;
-                localStorage.setItem('nav_idx', idx);
-                if (idx < steps.length) {
-                    speak("Now, " + steps[idx].text, true);
-                    window.lastNavSpeak = Date.now();
-                } else {
-                    speak("You have arrived at your destination.", true);
-                    localStorage.setItem('nav_steps', "[]");
-                }
-            }
-        }
-
-        // 2. Vision Logic (Combine multiple objects, prevent echo)
-        if (engineActive) {
-            let dets = JSON.parse(localStorage.getItem('vision_dets') || "[]");
-            if (dets.length > 0) {
-                let isDanger = false;
-                let textParts = [];
-                let seen = new Set();
-                
-                for (let d of dets) {
-                    // Combine multiple objects
-                    if (!seen.has(d.label)) {
-                        textParts.push(d.label + " " + d.pos);
-                        seen.add(d.label);
-                        if (d.dist === 'near') isDanger = true;
-                    }
-                    if (textParts.length >= 2) break; // Limit to 2 objects max at once
-                }
-                
-                if (textParts.length > 0) {
-                    let msgText = (isDanger ? "Watch out, " : "I see ") + textParts.join(" and ");
-                    const now = Date.now();
-                    
-                    // Throttle identical completely for 9 seconds to prevent Echo
-                    if (window.lastSpeakStr !== msgText || (now - window.lastSpeakTime > 9000)) {
-                        speak(msgText, isDanger);
-                        window.lastSpeakStr = msgText;
-                        window.lastSpeakTime = now;
-                    }
-                }
-            }
-        }
-    }, 1000);
-}
-</script>
-<div style="background:#f0f2f6; border-radius:10px; padding:15px; text-align:center;">
-    <b>🧠 Background Voice Engine</b><br>
-    <button id="unlock-btn" onclick="window.unlockVoice()" style="background:#ff6b6b; color:white; border:none; padding:10px 20px; border-radius:8px; cursor:pointer; font-weight:bold; margin-top:10px; font-size:16px; width:100%; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-        🚨 TAP HERE TO UNLOCK VOICE 🔊
-    </button>
-    <span id="gps-tracker" style="display:none; font-size:12px; color:#666; margin-top:5px;">GPS Tracking initializing...</span>
-</div>
-"""
-# Render the static engine exactly once. Height increased to fit the button.
-components.html(MASTER_ENGINE, height=120)
+my_voice_engine = components.declare_component("my_voice_engine", path="voice_engine")
 # ==============================================================================
 
 col_v, col_i = st.columns([1.5, 1])
+current_dets = []
+
 with col_v:
     ctx = webrtc_streamer(key="v", video_processor_factory=VisionProcessor, 
                          rtc_configuration=RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}))
     
     if ctx.video_processor:
         st.session_state.engine_active = st.toggle("Activate Voice engine", value=st.session_state.engine_active)
-        
-        # Inject fast-changing data blindly into LocalStorage for the Master Engine to pick up
-        current_dets = []
         with ctx.video_processor.lock: 
             current_dets = ctx.video_processor.detections.copy()
-            
-        inj = f"""<script>
-        localStorage.setItem('vision_dets', '{json.dumps(current_dets)}');
-        localStorage.setItem('engine_active', '{str(st.session_state.engine_active).lower()}');
-        </script>"""
-        components.html(inj, height=0)
+
+# Render the TRUE custom component (this iframe NEVER dies during reruns)
+my_voice_engine(
+    detections=current_dets, 
+    nav_steps=st.session_state.nav_steps, 
+    engine_active=st.session_state.engine_active,
+    key="engine_component"
+)            
+
 
 with col_i:
     st.subheader("🧭 Path Input")
