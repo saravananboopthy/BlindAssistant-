@@ -175,28 +175,54 @@ components.html(f"""
     </div>
     <script>
     const vdata = {voice_hub};
-    function lck() {{ localStorage.setItem('v_unlocked', 'true'); update(); speak("Brain synchronized. Ready."); }}
+    function lck() {{ localStorage.setItem('v_unlocked', 'true'); update(); speakQueue("Brain synchronized. Ready."); }}
     function update() {{ if(localStorage.getItem('v_unlocked') === 'true') {{ let b = document.getElementById('vbtn'); b.style.background = "#10b981"; b.innerText = "✔️ VOICE SYNCED"; }} }}
     
-    function speak(t) {{
-        if(localStorage.getItem('v_unlocked') !== 'true') return;
-        window.speechSynthesis.cancel(); // Cancel to avoid long backlogs
+    window.speechQueue = window.speechQueue || [];
+    window.isSpeakingNow = window.isSpeakingNow || false;
+
+    function processQueue() {{
+        if(window.isSpeakingNow || window.speechQueue.length === 0) return;
+        window.isSpeakingNow = true;
+        let t = window.speechQueue.shift();
+        
         let u = new SpeechSynthesisUtterance(t);
         u.rate = 0.95; 
+        
+        // Find a Female Voice
+        let voices = window.speechSynthesis.getVoices();
+        let femaleVoice = voices.find(v => v.name.includes('Female') || v.name.includes('Zira') || v.name.includes('Samantha') || v.name.includes('Victoria') || v.name.includes('Google US English'));
+        if (femaleVoice) {{
+            u.voice = femaleVoice;
+        }}
+        
+        u.onend = function() {{ window.isSpeakingNow = false; processQueue(); }};
+        u.onerror = function() {{ window.isSpeakingNow = false; processQueue(); }};
         window.speechSynthesis.speak(u);
     }}
+
+    function speakQueue(t) {{
+        if(localStorage.getItem('v_unlocked') !== 'true') return;
+        window.speechQueue.push(t);
+        processQueue();
+    }}
     
+    // Ensure voices are loaded (some browsers need this)
+    window.speechSynthesis.onvoiceschanged = function() {{
+        // Optional: trigger a queue process if needed
+    }};
+
     update();
+    
     if (vdata.nav || vdata.alert) {{
         const h = vdata.nav + "|" + vdata.alert;
         if(window.lastH !== h) {{
-            // Combine both messages into ONE fluid sentence to prevent cut-offs
-            let final_message = "";
-            if (vdata.nav) final_message += vdata.nav + ". ";
-            if (vdata.alert) final_message += vdata.alert + ".";
-            
-            if (final_message.trim() !== "") {{
-                speak(final_message.trim());
+            // Add to Voice Queue sequentially. Navigation first, then Alerts line-by-line.
+            if (vdata.nav) {{
+                speakQueue(vdata.nav);
+            }}
+            if (vdata.alert) {{
+                speakQueue(vdata.alert);
             }}
             window.lastH = h;
         }}
