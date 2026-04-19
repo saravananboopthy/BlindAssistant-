@@ -23,6 +23,7 @@ st.markdown("""
 <style>
 .main-header { background: #1e293b; padding: 15px; border-radius: 12px; color: white; text-align: center; }
 .stButton>button { border-radius: 10px; font-weight: bold; }
+.mic-hint { font-size: 0.8rem; color: #64748b; margin-top: -10px; margin-bottom: 10px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -56,7 +57,6 @@ class VisionProcessor(VideoProcessorBase):
             pos = "left" if (x1+x2)/2 < w*0.33 else "right" if (x1+x2)/2 > w*0.66 else "ahead"
             dist = "near" if (x2-x1) > 280 else "far"
             now.append({"label": label, "pos": pos, "dist": dist})
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
         with self.lock: self.detections = now
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
@@ -72,7 +72,9 @@ def get_walking_directions(source, dest, api_key):
         steps = []
         for s in leg["steps"]:
             instr = re.sub(r"<.*?>", "", s["html_instructions"]).replace("&nbsp;", " ").strip()
-            steps.append({"text": instr, "lat": s["end_location"]["lat"], "lng": s["end_location"]["lng"]})
+            # Clean for speech: only take the part before any comma or city name
+            speech_instr = instr.split(',')[0]
+            steps.append({"text": instr, "speech": speech_instr, "lat": s["end_location"]["lat"], "lng": s["end_location"]["lng"]})
         return steps, None
     except Exception as e: return None, str(e)
 
@@ -108,7 +110,9 @@ with col_v:
 with col_c:
     st.subheader("Control Center")
     api_key = st.secrets.get("GOOGLE_MAPS_API_KEY", os.getenv("GOOGLE_MAPS_API_KEY", ""))
-    dest_in = st.text_input("Destination", placeholder="e.g. Hope College")
+    
+    st.markdown('<p class="mic-hint">💡 Tap the text box below and use your phone\'s built-in 🎤 microphone button to speak your destination.</p>', unsafe_allow_html=True)
+    dest_in = st.text_input("Destination", placeholder="e.g. Hospital or Hope College", key="dest_field")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -117,88 +121,84 @@ with col_c:
                 data, err = get_walking_directions((u_lat, u_lng), dest_in, api_key)
                 if data:
                     st.session_state.state.update({"nav_steps": data, "nav_idx": 0, "active": True, "run_camera": True, "last_nav_msg": ""})
-                    nav_instruction = "Starting. Walk to: " + data[0]['text']
+                    nav_instruction = "Navigation started. Path found."
                 else: st.error(err)
     with c2:
         if st.button("🛑 STOP", type="primary", use_container_width=True):
             st.session_state.state.update({"active": False, "run_camera": False, "nav_steps": [], "nav_idx": 0})
             st.rerun()
 
-    # LIVE GPS PROGRESSION (FIXED CASCADE)
     if st.session_state.state["active"] and u_lat:
         steps = st.session_state.state["nav_steps"]
         idx = st.session_state.state["nav_idx"]
-        
         if idx < len(steps):
             cur_step = steps[idx]
             dist = calculate_dist(u_lat, u_lng, cur_step['lat'], cur_step['lng'])
-            st.success(f"**Step {idx+1}:** {cur_step['text']}")
-            st.metric("Distance to Turn", f"{dist:.1f} m")
+            st.success(f"**Action:** {cur_step['text']}")
             
-            # ADVANCE ONLY IF:
-            # 1. We are within 10 meters AND
-            # 2. At least 15 seconds passed since last step (prevents cascading)
             now = time.time()
-            if dist < 10 and (now - st.session_state.state["last_nav_time"]) > 15:
+            if dist < 12 and (now - st.session_state.state["last_nav_time"]) > 15:
+                # Use ONLY the short place name for speech
+                nav_instruction = cur_step['speech']
                 if st.session_state.state["nav_idx"] < len(steps) - 1:
                     st.session_state.state["nav_idx"] += 1
-                    next_step = steps[st.session_state.state["nav_idx"]]
-                    nav_instruction = "Now, " + next_step['text']
                     st.session_state.state["last_nav_time"] = now
                 else:
-                    nav_instruction = "Arrived at destination."
+                    nav_instruction = "Arrived at " + cur_step['speech']
                     st.session_state.state["active"] = False
-        else:
-            st.info("Goal reached.")
 
     st.divider()
     if st.session_state.state["run_camera"] and ctx.video_processor:
         with ctx.video_processor.lock:
             objs = ctx.video_processor.detections.copy()
-        
         if objs:
             st.write(", ".join([f"{o['label']} {o['pos']}" for o in objs]))
             now = time.time()
             for o in objs:
                 tag = f"{o['label']}_{o['pos']}"
-                # PRIORITY for near objects (immediate warning)
                 is_near = (o['dist'] == 'near')
-                cooldown = 3 if is_near else 15
-                
+                cooldown = 4 if is_near else 15
                 if tag not in st.session_state.state["obj_memory"] or now - st.session_state.state["obj_memory"][tag] > cooldown:
-                    prefix = "Danger! " if is_near else "I see "
-                    alert_instruction = prefix + f"{o['label']} {o['pos']}"
+                    alert_instruction = ("Danger! " if is_near else "Look out! ") + f"{o['label']} {o['pos']}"
                     st.session_state.state["obj_memory"][tag] = now
                     break
 
 # ==========================================
-# MASTER PERSISTENT VOICE ENGINE
+# MASTER SYNC VOICE QUEUE (No Mixing)
 # ==========================================
 voice_hub = json.dumps({"nav": nav_instruction, "alert": alert_instruction})
 
 components.html(f"""
-    <div style="background:#fef2f2; border:1px solid #ef4444; padding:10px; border-radius:10px; text-align:center;">
-        <button id="vbtn" onclick="lck()" style="background:#ef4444; color:white; border:none; padding:8px; border-radius:5px; cursor:pointer; font-weight:bold; width:100%;">
-            🔊 TAP TO RE-ENABLE VOICE 🚨
+    <div style="background:#f1f5f9; border:1px solid #cbd5e1; padding:10px; border-radius:10px; text-align:center;">
+        <button id="vbtn" onclick="lck()" style="background:#ef4444; color:white; border:none; padding:10px; border-radius:8px; cursor:pointer; font-weight:bold; width:100%; font-size:16px;">
+            🔊 TAP TO SYNC BRAIN & VOICE 🚨
         </button>
     </div>
     <script>
     const vdata = {voice_hub};
-    function lck() {{ localStorage.setItem('v_unlocked', 'true'); update(); speak("Assistant Online."); }}
-    function update() {{ if(localStorage.getItem('v_unlocked') === 'true') {{ let b = document.getElementById('vbtn'); b.style.background = "#10b981"; b.innerText = "✔️ VOICE ACTIVE"; }} }}
+    function lck() {{ localStorage.setItem('v_unlocked', 'true'); update(); speak("Brain synchronized. Queuing offline."); }}
+    function update() {{ if(localStorage.getItem('v_unlocked') === 'true') {{ let b = document.getElementById('vbtn'); b.style.background = "#10b981"; b.innerText = "✔️ VOICE SYNCED"; }} }}
+    
     function speak(t) {{
         if(localStorage.getItem('v_unlocked') !== 'true') return;
-        window.speechSynthesis.cancel();
-        let u = new SpeechSynthesisUtterance(t); u.rate = 1.0;
+        // NO CANCEL: This creates a queue (Talk 1, then Talk 2)
+        let u = new SpeechSynthesisUtterance(t);
+        u.rate = 0.95; // Slightly slower for clarity
         window.speechSynthesis.speak(u);
     }}
+    
     update();
     if (vdata.nav || vdata.alert) {{
-        const h = vdata.nav + vdata.alert + Date.now(); // Date.now ensures fresh execution
-        if(window.lastH !== vdata.nav + vdata.alert) {{ speak(vdata.nav + " " + vdata.alert); window.lastH = vdata.nav + vdata.alert; }}
+        const h = vdata.nav + vdata.alert + Date.now();
+        if(window.lastH !== vdata.nav + vdata.alert) {{
+            // ALWAYS speak navigation first, then alert
+            if(vdata.nav) speak(vdata.nav);
+            if(vdata.alert) speak(vdata.alert);
+            window.lastH = vdata.nav + vdata.alert;
+        }}
     }}
     </script>
-""", height=80)
+""", height=85)
 
 if st.session_state.state["active"] or st.session_state.state["run_camera"]:
     time.sleep(1.2)
