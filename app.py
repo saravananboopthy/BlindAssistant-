@@ -48,7 +48,8 @@ class VisionProcessor(VideoProcessorBase):
         self.detections = []
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
-        res = model(img, conf=0.45, verbose=False)[0]
+        # Lowered confidence from 0.45 to 0.35 to catch MORE objects correctly on mobile cameras
+        res = model(img, conf=0.35, verbose=False)[0]
         now = []
         h, w, _ = img.shape
         for b in res.boxes:
@@ -111,8 +112,8 @@ with col_c:
     st.subheader("Control Center")
     api_key = st.secrets.get("GOOGLE_MAPS_API_KEY", os.getenv("GOOGLE_MAPS_API_KEY", ""))
     
-    st.markdown('<p class="mic-hint">💡 Tap the text box below and use your phone\'s built-in 🎤 microphone button to speak your destination.</p>', unsafe_allow_html=True)
-    dest_in = st.text_input("Destination", placeholder="e.g. Hospital or Hope College", key="dest_field")
+    st.markdown('<p class="mic-hint">💡 Tap the input below and click your phone keyboard\'s 🎤 icon to speak your destination.</p>', unsafe_allow_html=True)
+    dest_in = st.text_input("Destination (Type or use phone 🎤)", placeholder="e.g. Hope College", key="dest_field")
 
     c1, c2 = st.columns(2)
     with c1:
