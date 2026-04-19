@@ -2,14 +2,15 @@ import streamlit as st
 import streamlit.components.v1 as components
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 from streamlit_geolocation import streamlit_geolocation
+from streamlit_autorefresh import st_autorefresh
 import av
 import cv2
 import threading
 import time
 import math
-import os
 import googlemaps
 import re
+import os
 from collections import Counter
 from ultralytics import YOLO
 
@@ -17,6 +18,9 @@ from ultralytics import YOLO
 # PAGE CONFIG
 # ==========================================
 st.set_page_config(page_title="Blind Assistant", page_icon="👁️", layout="wide")
+
+# Refresh the UI every second to check GPS/Objects (without restarting camera)
+st_autorefresh(interval=1000, key="nav_refresh")
 
 # Session State Initialization
 if "nav_steps" not in st.session_state:
@@ -32,25 +36,24 @@ if "nav_steps" not in st.session_state:
 # SPEECH ENGINE
 # ==========================================
 def speak(text):
-    # Using a unique key (timestamp) ensures Streamlit creates a fresh iframe that triggers the script
+    # Unique ID as a string ensures no typing errors on the Cloud
+    unique_id = str(int(time.time() * 1000))
     components.html(f"""
         <script>
-        window.speechSynthesis.cancel(); // Stop any current speech
-        const msg = new SpeechSynthesisUtterance("{text}");
+        var msg = new SpeechSynthesisUtterance("{text}");
         msg.rate = 1.0;
         window.speechSynthesis.speak(msg);
         </script>
-    """, height=0, key=f"speak_{time.time()}")
+    """, height=0, key=f"speak_{unique_id}")
 
 # ==========================================
 # NAVIGATION LOGIC
 # ==========================================
 def get_walking_directions(source, dest, api_key):
-    if not api_key: return None, "Missing API Key"
     try:
         gmaps = googlemaps.Client(key=api_key)
         res = gmaps.directions(source, dest, mode="walking")
-        if not res: return None, "No walking route found."
+        if not res: return None, "No route found."
         
         leg = res[0]["legs"][0]
         steps = []
@@ -64,7 +67,7 @@ def get_walking_directions(source, dest, api_key):
         return steps, None
     except Exception as e: return None, str(e)
 
-def distance_meters(lat1, lon1, lat2, lon2):
+def calculate_dist(lat1, lon1, lat2, lon2):
     R = 6371000
     p1, p2 = math.radians(lat1), math.radians(lat2)
     dp, dl = math.radians(lat2-lat1), math.radians(lon2-lon1)
@@ -75,33 +78,28 @@ def distance_meters(lat1, lon1, lat2, lon2):
 # VISION PROCESSOR
 # ==========================================
 @st.cache_resource
-def load_model():
+def load_yolo():
     return YOLO("yolov8n.pt")
 
-model = load_model()
+model = load_yolo()
 
-class BlindProcessor(VideoProcessorBase):
+class VisionProcessor(VideoProcessorBase):
     def __init__(self):
         self.lock = threading.Lock()
         self.detections = {}
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
         res = model(img, conf=0.45, verbose=False)[0]
-        detected = []
-        for box in res.boxes:
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            label = model.names[int(box.cls[0])]
-            detected.append(label)
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        detected = [model.names[int(b.cls[0])] for b in res.boxes]
         with self.lock: self.detections = dict(Counter(detected))
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 # ==========================================
-# UI LAYOUT
+# UI
 # ==========================================
 st.title("👁️ Blind Assistant")
 
-# Auto-loading GPS
+# GPS TRACKER
 location = streamlit_geolocation()
 u_lat = location.get('latitude') if location else None
 u_lng = location.get('longitude') if location else None
@@ -110,74 +108,61 @@ col1, col2 = st.columns([2, 1])
 
 with col1:
     ctx = webrtc_streamer(
-        key="camera_stream",
-        video_processor_factory=BlindProcessor,
+        key="camera",
+        video_processor_factory=VisionProcessor,
         rtc_configuration=RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}),
-        media_stream_constraints={"video": True, "audio": False},
-        async_processing=True
+        media_stream_constraints={"video": True, "audio": False}
     )
 
 with col2:
-    st.subheader("🧭 Path Input")
+    st.subheader("🧭 Navigation")
+    if u_lat: st.success(f"GPS Connected")
     
-    # Secret Key auto-load
+    # Auto-load API from secrets
     default_api = os.getenv("GOOGLE_MAPS_API_KEY", "")
     try:
         if st.secrets.get("GOOGLE_MAPS_API_KEY"): default_api = st.secrets["GOOGLE_MAPS_API_KEY"]
     except: pass
     
-    api = st.text_input("G-Maps Key", value=default_api, type="password")
-    dest = st.text_input("Destination", placeholder="e.g. Hope College, Coimbatore")
+    api_key = st.text_input("G-Maps Key", value=default_api, type="password")
+    dest = st.text_input("Destination", placeholder="e.g. Hope College")
 
     if st.button("Start Navigation", type="primary"):
-        if u_lat and api and dest:
-            steps, err = get_walking_directions((u_lat, u_lng), dest, api)
-            if steps:
-                st.session_state.nav_steps = steps
+        if u_lat and api_key and dest:
+            data, err = get_walking_directions((u_lat, u_lng), dest, api_key)
+            if data:
+                st.session_state.nav_steps = data
                 st.session_state.nav_idx = 0
                 st.session_state.nav_active = True
-                speak("Navigation started. Path found.")
+                speak("Navigation started")
             else: st.error(err)
 
     if st.session_state.nav_active:
         steps = st.session_state.nav_steps
-        idx = st.session_state.nav_idx
-        if idx < len(steps):
-            step = steps[idx]
-            st.info(f"**Step {idx+1}:** {step['text']}")
-            
-            # Auto-Voice Navigation Logic
+        curr = st.session_state.nav_idx
+        if curr < len(steps):
+            step = steps[curr]
+            st.info(f"Step {curr+1}: {step['text']}")
+            # Auto-Nav speech logic
             if u_lat:
-                dist = distance_meters(u_lat, u_lng, step['lat'], step['lng'])
-                if dist <= 15: # Proximity trigger (15 meters)
-                    if step['text'] != st.session_state.last_nav:
-                        speak(step['text'])
-                        st.session_state.last_nav = step['text']
-                        st.session_state.nav_idx += 1
+                dist = calculate_dist(u_lat, u_lng, step['lat'], step['lng'])
+                if dist <= 20 and step['text'] != st.session_state.last_nav:
+                    speak(step['text'])
+                    st.session_state.last_nav = step['text']
+                    st.session_state.nav_idx += 1
         else:
-            st.success("Arrived at Destination")
-            speak("You have arrived at your destination.")
+            speak("Arrived")
+            st.success("Destination reached")
             st.session_state.nav_active = False
 
-    st.divider()
     st.subheader("🎯 Objects Nearby")
     if ctx.video_processor:
         with ctx.video_processor.lock:
-            detections = ctx.video_processor.detections.copy()
-        
-        if detections:
-            for obj, count in detections.items():
-                st.markdown(f"**{obj.upper()}**: Detected")
-                
-                # Speech logic with 3-second throttle
-                now = time.time()
-                if obj not in st.session_state.detected_memory or now - st.session_state.detected_memory[obj] > 4:
-                    speak(obj)
-                    st.session_state.detected_memory[obj] = now
-        else:
-            st.write("Scanning for obstacles...")
-
-# Controlled refresh loop
-if ctx.state.playing:
-    time.sleep(1)
-    st.rerun()
+            objs = ctx.video_processor.detections.copy()
+        if objs:
+            st.write(", ".join([f"{v} {k}" for k,v in objs.items()]))
+            now = time.time()
+            for o in objs:
+                if o not in st.session_state.detected_memory or now - st.session_state.detected_memory[o] > 4:
+                    speak(o)
+                    st.session_state.detected_memory[o] = now
