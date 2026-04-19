@@ -1,118 +1,61 @@
-# Gemini Live Cam – Project Guide
+# 👁️ Blind Assistant - Cloud Edition
 
-## Overview
+A production-grade, real-time AI assistant designed for the visually impaired. This application leverages YOLOv8 for object detection and Google Maps for high-precision walking navigation, all accessible via a smooth, responsive Streamlit web interface.
 
-Gemini Live Cam is a Python application that streams real-time audio (and optionally video or screen captures) from your device to Google Gemini using the Gemini Live API. It enables interactive conversations with Gemini via both text and voice, demonstrating how to integrate media capture, streaming, and AI-powered responses in Python.
+## 🚀 Key Features
 
----
+- **Real-time Object Detection**: Uses YOLOv8 to identify obstacles and hazards.
+- **Dynamic Positioning**: Tells the user if an object is on their left, right, or straight ahead.
+- **Smart Navigation**: Integrated Google Maps walking directions with step-by-step voice guidance.
+- **Browser-Native TTS**: Utilizes the browser's speech synthesis for low-latency, adjustable voice feedback.
+- **Glassmorphism UI**: A modern, premium interface designed for accessibility and clarity.
+- **High-Accuracy Geolocation**: Fetches real-time location directly from the browser for precise navigation.
 
-## Features
+## 🛠️ Technology Stack
 
-- Real-time audio streaming to Gemini with AI-powered voice responses.
-- Optional video or screen frame streaming.
-- Interactive text chat with Gemini.
-- Audio playback of Gemini's responses.
-- Extensible for UI integration (Flask, Streamlit, etc.).
+- **Frontend**: Streamlit with custom CSS and JavaScript components.
+- **Computer Vision**: Ultralytics YOLOv8 (yolov8n).
+- **Navigation**: Google Maps Directions API.
+- **WebRTC**: `streamlit-webrtc` for high-performance camera streaming.
+- **Deployment**: Streamlit Cloud ready.
 
----
+## 📋 Prerequisites
 
-## Setup Instructions
+- Python 3.9+
+- [Google Maps API Key](https://console.cloud.google.com/google/maps-apis/credentials) with Directions API enabled.
 
-### 1. Clone the Repository
+## ⚙️ Installation
 
-```sh
-git clone <your-repo-url>
-cd gemini-live-cam
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/saravananboopthy/BlindAssistant-.git
+   cd BlindAssistant-
+   ```
+
+2. **Install dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Set up environment variables**:
+   Create a `.env` file in the root directory:
+   ```env
+   GOOGLE_MAPS_API_KEY=your_api_key_here
+   ```
+
+## 🏃 Running the App
+
+```bash
+streamlit run app.py
 ```
 
-### 2. Create and Activate a Virtual Environment
+## 🏗️ Deployment (Streamlit Cloud)
 
-**Windows:**
-```sh
-python -m venv gem-env
-gem-env\Scripts\activate
-```
-**Linux/macOS:**
-```sh
-python3 -m venv gem-env
-source gem-env/bin/activate
-```
+1. Push your code to GitHub.
+2. Connect your repo to Streamlit Cloud.
+3. In the "Advanced settings", add your `GOOGLE_MAPS_API_KEY` to the `Secrets` section.
+4. Deployment will automatically handle the `packages.txt` for system-level dependencies (ffmpeg, libgl1).
 
-### 3. Install Dependencies
+## 📄 License
 
-```sh
-pip install google-genai opencv-python pyaudio pillow mss python-dotenv
-```
-
-### 4. Set Up Environment Variables
-
-- Create a `.env` file in the project root.
-- Add your Google Gemini API key:
-
-```
-GEMINI_API_KEY=your_google_gemini_api_key_here
-```
-
----
-
-## Running the Project
-
-### Audio + Camera Mode
-
-```sh
-python gemini-live-cam.py --mode camera
-```
-
-### Audio + Screen Mode
-
-```sh
-python gemini-live-cam.py --mode screen
-```
-
-### Audio Only
-
-```sh
-python gemini-live-cam.py --mode none
-```
-
----
-
-## How It Works
-
-- The script captures audio from your microphone and (optionally) video from your webcam or screen.
-- Audio and video/screen frames are streamed to the Gemini model using the Google GenAI Live API.
-- You can also interact with Gemini via text input in the console.
-- Gemini responds with audio, which is played back in real time.
-
----
-
-## Requirements
-
-- Python 3.8+
-- A working microphone (and webcam/screen for video/screen modes)
-- Google Gemini API key
-
----
-
-## Significance
-
-This project demonstrates how to:
-- Integrate real-time media capture (audio/video/screen) in Python.
-- Stream data to a state-of-the-art AI model using Google GenAI Live API.
-- Build the foundation for advanced AI-powered assistants, bots, or interactive applications.
-
----
-
-## Next Steps
-
-- Extend with a web UI (Flask/Streamlit).
-- Add more controls and error handling.
-- Integrate with other tools or APIs as needed.
-
----
-
-## References
-
-- [Google Gemini Cookbook – Live API Quickstart](https://github.com/google-gemini/cookbook/blob/main/quickstarts/Get_started_LiveAPI.py)
-- [Google GenAI Python SDK Documentation](https://ai.google.dev/api/python/google/genai/aio/live/LiveSession)
-
+This project is licensed under the MIT License - see the LICENSE file for details.

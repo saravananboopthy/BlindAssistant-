@@ -5,6 +5,7 @@ __pycache__/
 *.pyc
 *.pyo
 .DS_Store
-yolov8x.pt
-yolov10n.pt
+yolov*.pt
+latest_frame.jpg
+system_status.json
 .streamlit/secrets.toml
