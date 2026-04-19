@@ -88,19 +88,32 @@ if (!window.masterEngineRunning) {
     window.lastNavSpeak = 0;
     window.navStarted = false;
     window.currentRouteHash = "";
+    window.audioUnlocked = false; // Prevents browser blocking
     
     // Auto-Tracking GPS for Navigation
     navigator.geolocation.watchPosition(
         (p) => { 
             window.currentLat = p.coords.latitude; 
             window.currentLng = p.coords.longitude; 
-            document.getElementById('gps-tracker').innerText = "Live GPS Tracking: Active";
+            if (document.getElementById('gps-tracker')) document.getElementById('gps-tracker').innerText = "Live GPS Tracking: Active";
         },
-        (e) => { document.getElementById('gps-tracker').innerText = "GPS Tracking Error: " + e.message; },
+        (e) => { 
+            if (document.getElementById('gps-tracker')) document.getElementById('gps-tracker').innerText = "GPS Error: " + e.message; 
+        },
         { enableHighAccuracy: true, maximumAge: 0 }
     );
 
+    window.unlockVoice = function() {
+        window.audioUnlocked = true;
+        let u = new SpeechSynthesisUtterance("Voice Assistant Enabled.");
+        u.rate = 0.9;
+        window.speechSynthesis.speak(u);
+        document.getElementById('unlock-btn').style.display = 'none';
+        document.getElementById('gps-tracker').style.display = 'block';
+    }
+
     function speak(text, prio=false) {
+        if (!window.audioUnlocked) return; // Browser will block if not explicitly unlocked
         if (window.speechSynthesis.speaking && !prio) return;
         if (prio) window.speechSynthesis.cancel();
         let u = new SpeechSynthesisUtterance(text);
@@ -188,13 +201,16 @@ if (!window.masterEngineRunning) {
     }, 1000);
 }
 </script>
-<div style="background:#f0f2f6; border-radius:10px; padding:10px; text-align:center;">
-    <b>🧠 Background Voice & Auto-Navigation Engine</b><br>
-    <span id="gps-tracker" style="font-size:12px; color:#666;">Waiting for initial lock...</span>
+<div style="background:#f0f2f6; border-radius:10px; padding:15px; text-align:center;">
+    <b>🧠 Background Voice Engine</b><br>
+    <button id="unlock-btn" onclick="window.unlockVoice()" style="background:#ff6b6b; color:white; border:none; padding:10px 20px; border-radius:8px; cursor:pointer; font-weight:bold; margin-top:10px; font-size:16px; width:100%; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+        🚨 TAP HERE TO UNLOCK VOICE 🔊
+    </button>
+    <span id="gps-tracker" style="display:none; font-size:12px; color:#666; margin-top:5px;">GPS Tracking initializing...</span>
 </div>
 """
-# Render the static engine exactly once
-components.html(MASTER_ENGINE, height=80)
+# Render the static engine exactly once. Height increased to fit the button.
+components.html(MASTER_ENGINE, height=120)
 # ==============================================================================
 
 col_v, col_i = st.columns([1.5, 1])
@@ -218,7 +234,15 @@ with col_v:
 
 with col_i:
     st.subheader("🧭 Path Input")
-    api = st.text_input("G-Maps Key", type="password")
+    
+    # Safely load the API Key
+    default_api = os.getenv("GOOGLE_MAPS_API_KEY", "")
+    try:
+        if st.secrets.get("GOOGLE_MAPS_API_KEY"):
+            default_api = st.secrets["GOOGLE_MAPS_API_KEY"]
+    except: pass
+    
+    api = st.text_input("G-Maps Key", value=default_api, type="password")
     
     # User uses built-in OS Voice dictation on this text field
     st.info("💡 Tap the text box below and use your phone's built-in 🎤 microphone button to speak your destination.")
