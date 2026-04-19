@@ -11,6 +11,7 @@ import math
 import googlemaps
 import re
 import os
+import json
 from collections import Counter
 from ultralytics import YOLO
 
@@ -19,8 +20,8 @@ from ultralytics import YOLO
 # ==========================================
 st.set_page_config(page_title="Blind Assistant", page_icon="👁️", layout="wide")
 
-# Stabilized Page Refresh (1 second)
-st_autorefresh(interval=1000, key="global_nav_refresh")
+# Stabilized Page Refresh
+st_autorefresh(interval=1500, key="global_sync_refresh")
 
 # Session State
 if "nav_steps" not in st.session_state:
@@ -28,19 +29,6 @@ if "nav_steps" not in st.session_state:
         "nav_steps": [], "nav_idx": 0, "nav_active": False, 
         "last_nav": "", "detected_memory": {}
     })
-
-# ==========================================
-# STABLE SPEECH ENGINE
-# ==========================================
-def speak(text):
-    # Fixed key and height for Streamlit Cloud compatibility
-    components.html(f"""
-        <script>
-        var msg = new SpeechSynthesisUtterance("{text}");
-        window.speechSynthesis.cancel(); // Clears queue to prevent lag
-        window.speechSynthesis.speak(msg);
-        </script>
-    """, height=1)
 
 # ==========================================
 # NAVIGATION CORE
@@ -55,18 +43,11 @@ def get_walking_directions(source, dest, api_key):
         for s in leg["steps"]:
             instr = re.sub(r"<.*?>", "", s["html_instructions"]).replace("&nbsp;", " ").strip()
             steps.append({
-                "text": f"{instr} for {s['distance']['text']}",
+                "text": instr,
                 "lat": s["end_location"]["lat"], "lng": s["end_location"]["lng"]
             })
         return steps, None
     except Exception as e: return None, str(e)
-
-def calculate_dist(lat1, lon1, lat2, lon2):
-    R = 6371000
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    dp, dl = math.radians(lat2-lat1), math.radians(lon2-lon1)
-    a = math.sin(dp/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2
-    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
 # ==========================================
 # AI VISION
@@ -78,12 +59,19 @@ model = load_yolo()
 class VisionProcessor(VideoProcessorBase):
     def __init__(self):
         self.lock = threading.Lock()
-        self.detections = {}
+        self.detections = []
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
         res = model(img, conf=0.45, verbose=False)[0]
-        detected = [model.names[int(b.cls[0])] for b in res.boxes]
-        with self.lock: self.detections = dict(Counter(detected))
+        now = []
+        h, w, _ = img.shape
+        for b in res.boxes:
+            x1, y1, x2, y2 = map(int, b.xyxy[0])
+            label = model.names[int(b.cls[0])]
+            pos = "on your left" if (x1+x2)/2 < w*0.33 else "on your right" if (x1+x2)/2 > w*0.66 else "straight ahead"
+            now.append({"label": label, "pos": pos})
+            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        with self.lock: self.detections = now
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 # ==========================================
@@ -97,6 +85,17 @@ u_lng = location.get('longitude') if location else None
 
 col1, col2 = st.columns([2, 1])
 
+# DATA FOR THE MASTER VOICE & NAV ENGINE
+current_nav_step = ""
+current_nav_data = []
+if st.session_state.nav_active:
+    idx = st.session_state.nav_idx
+    if idx < len(st.session_state.nav_steps):
+        current_nav_step = st.session_state.nav_steps[idx]["text"]
+        current_nav_data = st.session_state.nav_steps[idx]
+
+detection_alerts = []
+
 with col1:
     ctx = webrtc_streamer(
         key="camera",
@@ -106,9 +105,15 @@ with col1:
     )
 
 with col2:
-    st.subheader("🧭 Path Navigation")
+    st.subheader("🧭 Path & Settings")
     
-    # Auto-load API from secrets
+    # Check for Step Advance Request from JS
+    if st.query_params.get("step_reached"):
+        if st.session_state.nav_idx < len(st.session_state.nav_steps) - 1:
+            st.session_state.nav_idx += 1
+            st.query_params.clear()
+            st.rerun()
+
     default_api = os.getenv("GOOGLE_MAPS_API_KEY", "")
     try:
         if st.secrets.get("GOOGLE_MAPS_API_KEY"): default_api = st.secrets["GOOGLE_MAPS_API_KEY"]
@@ -117,40 +122,90 @@ with col2:
     api_key = st.text_input("G-Maps Key", value=default_api, type="password")
     dest = st.text_input("Destination", placeholder="e.g. Hope College")
 
-    if st.button("Start Navigation", type="primary"):
+    if st.button("Start Assistant", type="primary", use_container_width=True):
         if u_lat and api_key and dest:
             data, err = get_walking_directions((u_lat, u_lng), dest, api_key)
             if data:
-                st.session_state.nav_steps = data
-                st.session_state.nav_idx = 0
-                st.session_state.nav_active = True
-                speak("Navigation started")
+                st.session_state.update({"nav_steps": data, "nav_idx": 0, "nav_active": True})
             else: st.error(err)
 
     if st.session_state.nav_active:
-        steps = st.session_state.nav_steps
-        curr = st.session_state.nav_idx
-        if curr < len(steps):
-            step = steps[curr]
-            st.info(f"Step {curr+1}: {step['text']}")
-            if u_lat:
-                dist = calculate_dist(u_lat, u_lng, step['lat'], step['lng'])
-                if dist <= 20 and step['text'] != st.session_state.last_nav:
-                    speak(step['text'])
-                    st.session_state.last_nav = step['text']
-                    st.session_state.nav_idx += 1
-        else:
-            st.success("Arrived")
-            st.session_state.nav_active = False
+        st.info(f"**Step {st.session_state.nav_idx + 1}:** {current_nav_step}")
+        if st.button("Stop"): st.session_state.nav_active = False; st.rerun()
 
     st.subheader("🎯 Active Detections")
     if ctx.video_processor:
         with ctx.video_processor.lock:
             objs = ctx.video_processor.detections.copy()
         if objs:
-            st.write(", ".join([f"{v} {k}" for k,v in objs.items()]))
+            st.write(", ".join([f"{o['label']} ({o['pos']})" for o in objs]))
             now = time.time()
             for o in objs:
-                if o not in st.session_state.detected_memory or now - st.session_state.detected_memory[o] > 4:
-                    speak(o)
-                    st.session_state.detected_memory[o] = now
+                tag = f"{o['label']}_{o['pos']}"
+                if tag not in st.session_state.detected_memory or now - st.session_state.detected_memory[tag] > 8:
+                    detection_alerts.append(f"{o['label']} {o['pos']}")
+                    st.session_state.detected_memory[tag] = now
+
+# ==========================================
+# MASTER SMART ENGINE (Auto-Nav + Positional Voice)
+# ==========================================
+js_engine = f"""
+    <div style="background:#f8fafc; padding:15px; border-radius:10px; text-align:center; border:2px solid #e2e8f0; font-family:sans-serif;">
+        <button id="vbtn" onclick="ulock()" style="background:#ef4444; color:white; border:none; padding:10px; border-radius:8px; cursor:pointer; font-weight:bold; width:100%;">
+            🚨 TAP TO ENABLE VOICE & AUTO-GPS 🔊
+        </button>
+        <div id="status" style="margin-top:8px; font-size:12px; color:#64748b;">System Standby</div>
+    </div>
+    <script>
+    const data = {json.dumps({"nav": current_nav_step, "nav_goal": current_nav_data, "objs": detection_alerts})};
+    
+    function speak(t, priority=false) {{
+        if (!window.active) return;
+        if (priority) window.speechSynthesis.cancel();
+        let u = new SpeechSynthesisUtterance(t); u.rate = 1.0;
+        window.speechSynthesis.speak(u);
+    }}
+
+    function ulock() {{
+        window.active = true;
+        let b = document.getElementById('vbtn');
+        b.style.background = '#10b981'; b.innerText = '✔️ ASSISTANT LIVE';
+        document.getElementById('status').innerText = 'GPS Tracking & AI Detections Active';
+        speak("System ready. Vision and Navigation online.");
+        
+        // Start HIGH-ACCURACY WatchPosition inside the engine
+        navigator.geolocation.watchPosition((p) => {{
+            window.curLat = p.coords.latitude; window.curLng = p.coords.longitude;
+            checkProximity();
+        }}, (e) => {{ console.error(e); }}, {{enableHighAccuracy: true}});
+    }}
+
+    function checkProximity() {{
+        if (data.nav_goal && data.nav_goal.lat) {{
+            const R = 6371e3;
+            const dLat = (data.nav_goal.lat - window.curLat) * Math.PI/180;
+            const dLng = (data.nav_goal.lng - window.curLng) * Math.PI/180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(window.curLat * Math.PI/180) * Math.cos(data.nav_goal.lat * Math.PI/180) * Math.sin(dLng/2) * Math.sin(dLng/2);
+            const dist = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            
+            // If within 15 meters, tell Python to advance to next step
+            if (dist < 15) {{
+                window.parent.postMessage({{type: 'streamlit:set_query_params', queryParams: {{'step_reached': Date.now()}} }}, '*');
+            }}
+        }}
+    }}
+
+    // Trigger Navigation Voice
+    if (data.nav && sessionStorage.getItem('last_nav') !== data.nav) {{
+        speak("Next: " + data.nav, true);
+        sessionStorage.setItem('last_nav', data.nav);
+    }}
+
+    // Trigger Object Voice with Placement
+    if (data.objs.length > 0) {{
+        let msg = "I see " + data.objs.join(" and ");
+        speak(msg, false);
+    }}
+    </script>
+"""
+components.html(js_engine, height=130)
