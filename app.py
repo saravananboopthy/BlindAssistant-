@@ -1,269 +1,165 @@
-"""
-Blind Assistant - AI Vision + Navigation
-Streamlit Cloud compatible
-"""
-
-import os
-os.environ["YOLO_CONFIG_DIR"] = "/tmp"
-
 import streamlit as st
-import streamlit.components.v1 as components
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
-import av
-import cv2
-import numpy as np
-import threading
-from collections import Counter
-from ultralytics import YOLO
-from navigator import get_walking_directions
+import json
+import time
+import os
+from PIL import Image
 
-
-# ------------------------------------------------
-# PAGE CONFIG
-# ------------------------------------------------
+# Streamlit Configuration
 st.set_page_config(
-    page_title="Blind Assistant",
+    page_title="Blind Assistant Monitor",
     page_icon="👁️",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
+# Custom Styling (Premium Look)
+st.markdown("""
+    <style>
+    .main {
+        background-color: #0e1117;
+    }
+    .stMetric {
+        background-color: #1a1c24;
+        padding: 15px;
+        border-radius: 10px;
+        border: 1px solid #333;
+    }
+    .nav-card {
+        padding: 20px;
+        background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 100%);
+        border-radius: 15px;
+        color: white;
+        margin-bottom: 20px;
+    }
+    .detection-card {
+        background: #1f2937;
+        padding: 10px 20px;
+        border-radius: 8px;
+        margin-bottom: 8px;
+        border-left: 5px solid #10b981;
+    }
+    .detection-critical {
+        border-left: 5px solid #ef4444;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-# ------------------------------------------------
-# LOAD YOLO MODEL
-# ------------------------------------------------
-@st.cache_resource
-def load_model():
-    return YOLO("yolov8n")
+# App Title
+st.title("👁️ Blind Assistant - Pro Monitoring")
+st.write("---")
 
-model = load_model()
+# Layout
+col_feed, col_info = st.columns([3, 2])
 
+# IPC File Paths
+STATUS_FILE = "system_status.json"
+FRAME_FILE = "latest_frame.jpg"
 
-VEHICLE_OBJECTS = {"car", "truck", "bus", "motorcycle", "bicycle"}
-WARNING_OBJECTS = {"dog", "stop sign", "traffic light"}
+def load_system_data():
+    if os.path.exists(STATUS_FILE):
+        try:
+            with open(STATUS_FILE, "r") as f:
+                return json.load(f)
+        except:
+            return None
+    return None
 
+def load_latest_frame():
+    if os.path.exists(FRAME_FILE):
+        try:
+            return Image.open(FRAME_FILE)
+        except:
+            return None
+    return None
 
-# ------------------------------------------------
-# RTC CONFIG
-# ------------------------------------------------
-RTC_CONFIGURATION = RTCConfiguration(
-    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-)
-
-
-# ------------------------------------------------
-# SESSION STATE
-# ------------------------------------------------
-for key, default in {
-    "nav_steps": [],
-    "nav_current": 0,
-    "nav_active": False,
-    "nav_summary": {},
-    "last_spoken": ""
-}.items():
-    if key not in st.session_state:
-        st.session_state[key] = default
-
-
-# ------------------------------------------------
-# VIDEO PROCESSOR
-# ------------------------------------------------
-class BlindProcessor(VideoProcessorBase):
-
-    confidence = 0.40
-
-    def __init__(self):
-        self.lock = threading.Lock()
-        self.detections = {}
-
-    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-
-        img = frame.to_ndarray(format="bgr24")
-
-        results = model(img, conf=self.confidence, verbose=False)[0]
-
-        detected = []
-
-        for box in results.boxes:
-
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            cls_id = int(box.cls[0])
-            label = model.names[cls_id]
-            conf = float(box.conf[0])
-
-            detected.append(label)
-
-            if label in VEHICLE_OBJECTS:
-                color = (0, 0, 255)
-            elif label in WARNING_OBJECTS:
-                color = (0, 255, 255)
-            else:
-                color = (0, 255, 0)
-
-            cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
-
-            text = f"{label} {conf:.0%}"
-
-            cv2.putText(
-                img,
-                text,
-                (x1, y1 - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                color,
-                2
-            )
-
-        with self.lock:
-            self.detections = dict(Counter(detected))
-
-        return av.VideoFrame.from_ndarray(img, format="bgr24")
-
-
-# ------------------------------------------------
-# TEXT TO SPEECH
-# ------------------------------------------------
-def browser_speak(text):
-
-    escaped = text.replace('"', '\\"')
-
-    components.html(
-        f"""
-<script>
-var msg = new SpeechSynthesisUtterance("{escaped}");
-speechSynthesis.cancel();
-speechSynthesis.speak(msg);
-</script>
-""",
-        height=0
-    )
-
-
-# ------------------------------------------------
-# SIDEBAR
-# ------------------------------------------------
+# Sidebar Controls
 with st.sidebar:
+    st.header("📊 System Stats")
+    engine_status_placeholder = st.empty()
+    st.write("---")
+    st.info("💡 Start 'main.py' first to activate the engine.")
 
-    st.title("👁 Blind Assistant")
+# Main Loop (Reactive UI)
+# Note: Streamlit doesn't support built-in fast loops well without extra components,
+# so we use a simple loop with st.empty placeholders.
 
-    confidence = st.slider(
-        "Detection Confidence",
-        0.1, 1.0, 0.4
-    )
+with col_feed:
+    st.subheader("📷 Live Computer Vision Feed")
+    video_placeholder = st.empty()
 
-    voice_enabled = st.toggle(
-        "Voice Alerts"
-    )
+with col_info:
+    st.subheader("📍 Navigation & Logic")
+    nav_placeholder = st.empty()
+    st.write("---")
+    st.subheader("🔍 Real-time Detections")
+    detect_placeholder = st.empty()
 
-    st.divider()
+# Persistent state for status
+last_status = "Offline"
 
-    st.subheader("Navigation")
+while True:
+    data = load_system_data()
+    img = load_latest_frame()
+    
+    if data:
+        # Update Feed
+        if img:
+            video_placeholder.image(img, use_container_width=True)
+        else:
+            video_placeholder.warning("Camera feed signal low...")
 
-    source = st.text_input("Start location")
-    destination = st.text_input("Destination")
-
-    if st.button("Start Navigation"):
-
-        if source and destination:
-
-            result, error = get_walking_directions(
-                source,
-                destination
-            )
-
-            if result:
-                st.session_state.nav_steps = result["steps"]
-                st.session_state.nav_summary = result["summary"]
-                st.session_state.nav_current = 0
-                st.session_state.nav_active = True
+        # Update Navigation Info
+        with nav_placeholder.container():
+            st.markdown(f"""
+            <div class="nav-card">
+                <h3>Current Status: {data.get('status', 'Unknown')}</h3>
+                <p style="font-size: 1.2em;">Target: <b>{data.get('destination', 'No target set')}</b></p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            steps_total = data.get("total_steps", 0)
+            if steps_total > 0:
+                current_idx = data.get("nav_index", 0)
+                progress = (current_idx + 1) / steps_total
+                st.progress(min(progress, 1.0))
+                st.write(f"**Next Action:** {data.get('current_step', 'N/A')}")
             else:
-                st.error(error)
+                st.write("Waiting for voice input destination...")
 
-        else:
-            st.warning("Please enter both locations")
+        # Update Detections
+        with detect_placeholder.container():
+            detections = data.get("detected", [])
+            if detections:
+                for obj in detections:
+                    cls_name = "detection-critical" if obj['dist'] == "near" else "detection-card"
+                    label_color = "#ef4444" if obj['dist'] == "near" else "#10b981"
+                    st.markdown(f"""
+                    <div class="{cls_name}">
+                        <span style="color: {label_color}; font-weight: bold;">{obj['label'].upper()}</span> 
+                        | Position: <b>{obj['pos']}</b> | Distance: <b>{obj['dist']}</b>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.write("Path is clear.")
 
+    if data:
+        # Destination Control in Sidebar
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("### 🗺️ Manual Navigation")
+        manual_dest = st.sidebar.text_input("Type Destination:", key="dest_txt")
+        if st.sidebar.button("Send to Engine"):
+            if manual_dest:
+                with open("destination_input.txt", "w") as f:
+                    f.write(manual_dest)
+                st.sidebar.success("Sent!")
+            else:
+                st.sidebar.warning("Enter a place first.")
 
-# ------------------------------------------------
-# MAIN UI
-# ------------------------------------------------
-st.title("👁️ Blind Assistant")
-
-col1, col2 = st.columns([3, 2])
-
-
-# ------------------------------------------------
-# CAMERA
-# ------------------------------------------------
-with col1:
-
-    st.subheader("Camera")
-
-    ctx = webrtc_streamer(
-        key="blind-assistant",
-        rtc_configuration=RTC_CONFIGURATION,
-        video_processor_factory=BlindProcessor,
-        media_stream_constraints={"video": True, "audio": False},
-        async_processing=True
-    )
-
-
-# ------------------------------------------------
-# DETECTIONS PANEL
-# ------------------------------------------------
-with col2:
-
-    st.subheader("Detected Objects")
-
-    if ctx.state.playing and ctx.video_processor:
-
-        with ctx.video_processor.lock:
-            detections = ctx.video_processor.detections.copy()
-
-        if detections:
-
-            for obj, count in detections.items():
-                st.write(f"⚠ {count} {obj}")
-
-            if voice_enabled:
-
-                text = ", ".join(
-                    f"{count} {obj}" for obj, count in detections.items()
-                )
-
-                if text != st.session_state.last_spoken:
-                    browser_speak(text)
-                    st.session_state.last_spoken = text
-
-        else:
-            st.info("No objects detected")
-
+        video_placeholder.image(FRAME_FILE, use_column_width=True)
+        engine_status_placeholder.success("Engine: ONLINE")
     else:
-        st.info("Start camera to begin detection")
+        video_placeholder.info("Waiting for engine to start. Run 'python main.py' to begin.")
+        engine_status_placeholder.error("Engine: OFFLINE")
 
-
-# ------------------------------------------------
-# NAVIGATION PANEL
-# ------------------------------------------------
-if st.session_state.nav_active:
-
-    st.divider()
-
-    st.subheader("Navigation")
-
-    idx = st.session_state.nav_current
-    steps = st.session_state.nav_steps
-
-    if steps:
-
-        step = steps[idx]
-
-        st.success(step["text"])
-
-        colA, colB = st.columns(2)
-
-        if colA.button("Previous") and idx > 0:
-            st.session_state.nav_current -= 1
-            st.rerun()
-
-        if colB.button("Next") and idx < len(steps) - 1:
-            st.session_state.nav_current += 1
-            st.rerun()
+    # High frequency update for monitor
+    time.sleep(0.1)
