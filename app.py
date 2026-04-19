@@ -54,6 +54,34 @@ html, body, [class*="st-"] { font-family: 'Inter', sans-serif; }
 """, unsafe_allow_html=True)
 
 # ==========================================
+# JS GEOLOCATION (High Accuracy)
+# ==========================================
+# This script sends lat/lng to Streamlit query params so we can read it
+components.html("""
+    <script>
+    function sendLoc() {
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                const lat = pos.coords.latitude;
+                const lng = pos.coords.longitude;
+                window.parent.postMessage({
+                    type: 'streamlit:set_query_params',
+                    queryParams: { lat: lat, lng: lng }
+                }, '*');
+            },
+            (err) => { console.error("Loc Error:", err); },
+            { enableHighAccuracy: true }
+        );
+    }
+    sendLoc();
+    setInterval(sendLoc, 10000); // Update every 10s
+    </script>
+""", height=0)
+
+user_lat = st.query_params.get("lat")
+user_lng = st.query_params.get("lng")
+
+# ==========================================
 # UTILS & MODEL
 # ==========================================
 @st.cache_resource
@@ -62,14 +90,6 @@ def load_yolo():
 
 model = load_yolo()
 
-def haversine(lat1, lon1, lat2, lon2):
-    R = 6371000 
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2)**2
-    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
 # ==========================================
 # VIDEO PROCESSOR (AI ENGINE)
 # ==========================================
@@ -77,9 +97,6 @@ class VisionProcessor(VideoProcessorBase):
     def __init__(self):
         self.lock = threading.Lock()
         self.detections = []
-        self.debounce = {}
-        self.last_spoken = {}
-        self.last_global_speak = 0
 
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         img = frame.to_ndarray(format="bgr24")
@@ -87,24 +104,23 @@ class VisionProcessor(VideoProcessorBase):
         
         h, w, _ = img.shape
         detected_now = []
-        current_labels = set()
 
         for box in results.boxes:
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             label = model.names[int(box.cls[0])]
-            conf = float(box.conf[0])
             
             x_center = (x1 + x2) / 2
-            if x_center < w * 0.33: pos = "on your Left"
-            elif x_center > w * 0.66: pos = "on your Right"
-            else: pos = "Immediately Ahead"
+            if x_center < w * 0.33: pos = "on your left"
+            elif x_center > w * 0.66: pos = "on your right"
+            else: pos = "immediately ahead"
 
-            dist = "near" if (x2 - x1) > 250 else "far"
+            dist_px = x2 - x1
+            dist = "near" if dist_px > 300 else "far"
+            
             detected_now.append({"label": label, "pos": pos, "dist": dist})
-            current_labels.add(label)
 
             # Draw
-            color = (107, 107, 255) if dist == "near" else (170, 212, 0)
+            color = (139, 68, 255) if dist == "near" else (0, 212, 170)
             cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
             cv2.putText(img, f"{label} {dist}", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
@@ -119,31 +135,33 @@ class VisionProcessor(VideoProcessorBase):
 if "nav_steps" not in st.session_state:
     st.session_state.update({
         "nav_steps": [], "nav_idx": 0, "destination": "", 
-        "last_spoken": "", "speak_queue": []
+        "last_spoken": "", "speak_trigger": 0
     })
 
 # ==========================================
 # JS TTS HELPER
 # ==========================================
-def browser_speak(text, rate=0.8):
+def browser_speak(text, rate=0.7):
     if not text: return
-    # Sanitize text
     clean_text = text.replace("'", "").replace('"', "")
+    # Use unique key to trigger refresh of speech component
+    st.session_state.speak_trigger += 1
     components.html(f"""
         <script>
-            var u = new SpeechSynthesisUtterance('{clean_text}');
+            window.speechSynthesis.cancel();
+            var u = new SpeechSynthesisUtterance("{clean_text}");
             u.rate = {rate};
             window.speechSynthesis.speak(u);
         </script>
-    """, height=0)
+    """, height=0, key=f"tts_{st.session_state.speak_trigger}")
 
 # ==========================================
 # UI LAYOUT
 # ==========================================
-st.markdown("""
+st.markdown(f"""
 <div class="main-header">
     <h1>👁️ Blind Assistant - Cloud Edition</h1>
-    <p>Real-time AI Vision & Walking Navigation (Web Standalone)</p>
+    <p>GPS Lat: {user_lat or 'Finding...'} | Lng: {user_lng or 'Finding...'}</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -152,24 +170,30 @@ with st.sidebar:
     api_key = st.text_input("Google Maps API Key", value=os.getenv("GOOGLE_MAPS_API_KEY", ""), type="password")
     
     st.divider()
-    dest_input = st.text_input("📍 Set Destination", placeholder="e.g. Times Square")
+    dest_input = st.text_input("📍 Set Destination", placeholder="e.g. Coimbatore Bus Stand")
     if st.button("Start Navigation") and dest_input and api_key:
-        try:
-            gmaps = googlemaps.Client(key=api_key)
-            # Simple Geocode for now
-            res = gmaps.directions("current location", dest_input, mode="walking")
-            if res:
-                leg = res[0]["legs"][0]
-                steps = []
-                for s in leg["steps"]:
-                    steps.append(s["html_instructions"].replace("<b>", "").replace("</b>", ""))
-                st.session_state.nav_steps = steps
-                st.session_state.nav_idx = 0
-                st.session_state.destination = dest_input
-                st.success("Route Found!")
-                browser_speak(f"Navigating to {dest_input}")
-        except Exception as e:
-            st.error(f"Error: {e}")
+        if not user_lat or not user_lng:
+            st.error("Waiting for GPS location from browser. Please allow location access.")
+        else:
+            try:
+                gmaps = googlemaps.Client(key=api_key)
+                source_coords = (float(user_lat), float(user_lng))
+                res = gmaps.directions(source_coords, dest_input, mode="walking")
+                if res:
+                    leg = res[0]["legs"][0]
+                    steps = []
+                    for s in leg["steps"]:
+                        instr = s["html_instructions"].replace("<b>", "").replace("</b>", "").replace('<div style="font-size:0.9em">', " ").replace("</div>", "")
+                        steps.append(instr)
+                    st.session_state.nav_steps = steps
+                    st.session_state.nav_idx = 0
+                    st.session_state.destination = dest_input
+                    st.success(f"Route found to {dest_input}")
+                    browser_speak(f"Navigating to {dest_input}. Your first step is: {steps[0]}")
+                else:
+                    st.error("No walking route found.")
+            except Exception as e:
+                st.error(f"Google Maps Error: {e}")
 
 col_vid, col_info = st.columns([3, 2])
 
@@ -179,19 +203,24 @@ with col_vid:
         video_processor_factory=VisionProcessor,
         rtc_configuration=RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}),
         media_stream_constraints={"video": True, "audio": False},
+        async_processing=True
     )
 
 with col_info:
-    st.subheader("🧭 Navigation Step")
+    st.subheader("🧭 Navigation")
     if st.session_state.nav_steps:
         idx = st.session_state.nav_idx
         step_text = st.session_state.nav_steps[idx]
-        st.markdown(f"""<div class="nav-card"><h3>Step {idx+1}</h3><p>{step_text}</p></div>""", unsafe_allow_html=True)
-        if st.button("Next Step"):
-            st.session_state.nav_idx += 1
-            browser_speak(st.session_state.nav_steps[st.session_state.nav_idx])
+        st.markdown(f"""<div class="nav-card"><h3>Step {idx+1}/{len(st.session_state.nav_steps)}</h3><p style="font-size:1.2rem">{step_text}</p></div>""", unsafe_allow_html=True)
+        if st.button("Next Step ➡"):
+            if st.session_state.nav_idx < len(st.session_state.nav_steps) - 1:
+                st.session_state.nav_idx += 1
+                new_step = st.session_state.nav_steps[st.session_state.nav_idx]
+                browser_speak(new_step)
+            else:
+                browser_speak("You have arrived at your destination.")
     else:
-        st.info("Set destination in sidebar to begin.")
+        st.info("Enter a destination and click 'Start' to begin GPS navigation.")
 
     st.divider()
     st.subheader("🎯 Active Detections")
@@ -206,18 +235,21 @@ if webrtc_ctx.video_processor:
             current_detections = webrtc_ctx.video_processor.detections.copy()
         
         with det_placeholder.container():
-            for d in current_detections:
-                is_near = d['dist'] == "near"
-                css = "warn" if is_near else ""
-                st.markdown(f"""<div class="det-item {css}"><b>{d['label'].upper()}</b> {d['pos']} ({d['dist']})</div>""", unsafe_allow_html=True)
+            if current_detections:
+                for d in current_detections:
+                    is_near = d['dist'] == "near"
+                    css = "warn" if is_near else ""
+                    st.markdown(f"""<div class="det-item {css}"><b>{d['label'].upper()}</b> {d['pos']}</div>""", unsafe_allow_html=True)
+                
+                # TTS Logic: Speak the top item
+                top_obj = current_detections[0]
+                speak_msg = f"{top_obj['label']} {top_obj['pos']}"
+                
+                if speak_msg != st.session_state.last_spoken:
+                    st.session_state.last_spoken = speak_msg
+                    # SLOW VOICE as requested
+                    browser_speak(speak_msg, rate=0.7)
+            else:
+                st.write("Checking path...")
         
-        # Simple Logic to avoid repeat speech
-        if current_detections:
-            top_obj = current_detections[0]
-            speak_msg = f"{top_obj['label']} {top_obj['pos']}"
-            if speak_msg != st.session_state.last_spoken:
-                # Add a 3 second cooldown for repetitive object announcements in UI
-                st.session_state.last_spoken = speak_msg
-                browser_speak(speak_msg, rate=0.7) # Using SLOW rate as requested!
-        
-        time.sleep(1.5) # Global gap between detection checks
+        time.sleep(2.0) # Line by line spacing
