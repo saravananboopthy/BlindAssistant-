@@ -148,16 +148,26 @@ with col_i:
     except: pass
     
     api = st.text_input("G-Maps Key", value=default_api, type="password")
-    dest_in = st.text_input("Destination", placeholder="e.g. Hospital")
+    dest_in = st.text_input("Destination", placeholder="e.g. NGP College or Hope College")
 
-    if st.button("Start Navigation", type="primary"):
-        if user_lat and api and dest_in:
-            source = f"{user_lat},{user_lng}"
-            steps, error = get_walking_directions(source, dest_in, api)
-            if steps:
-                st.session_state.update({"nav_steps": steps, "nav_idx": 0})
-                st.success("Route Found!")
-            else: st.error(error)
+    col_btn1, col_btn2 = st.columns(2)
+    with col_btn1:
+        if st.button("Start Navigation", type="primary", use_container_width=True):
+            if user_lat and api and dest_in:
+                source = f"{user_lat},{user_lng}"
+                steps, error = get_walking_directions(source, dest_in, api)
+                if steps:
+                    st.session_state.update({"nav_steps": steps, "nav_idx": 0})
+                    st.success("Route Found!")
+                else: 
+                    st.error(f"Navigation Failure: {error}")
+                    st.info("Try a more specific destination (e.g., 'Hope College, Coimbatore')")
+    
+    with col_btn2:
+        if st.button("Clear Route", use_container_width=True):
+            st.session_state.nav_steps = []
+            st.session_state.nav_idx = 0
+            st.rerun()
 
     if st.session_state.nav_steps:
         idx = st.session_state.nav_idx
