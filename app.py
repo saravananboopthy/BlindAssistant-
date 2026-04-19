@@ -116,25 +116,23 @@ col_v, col_i = st.columns([1.5, 1])
 # DATA GATHERING for the background engine
 current_detections = []
 
-with col_v:
-    ctx = webrtc_streamer(
-        key="camera",
-        video_processor_factory=BlindProcessor,
-        rtc_configuration=RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}),
-        media_stream_constraints={"video": True, "audio": False},
-        async_processing=True
-    )
-    if ctx.video_processor:
-        st.session_state.engine_active = st.toggle("Activate AI Voice Engine", value=st.session_state.engine_active)
-        with ctx.video_processor.lock:
-            current_detections = ctx.video_processor.detections.copy()
+# Ensure lat/lng are passed as numbers or null
+p_lat = float(user_lat) if user_lat else None
+p_lng = float(user_lng) if user_lng else None
+
+if ctx.video_processor:
+    st.session_state.engine_active = st.toggle("Activate AI Voice Engine", value=st.session_state.engine_active)
+    with ctx.video_processor.lock:
+        current_detections = ctx.video_processor.detections.copy()
 
 # RENDER THE GLOBAL VOICE ENGINE - Passes state to JS for persistent TTS & Navigation
 my_voice_engine(
     detections=current_detections,
     nav_steps=st.session_state.nav_steps,
     engine_active=st.session_state.engine_active,
-    key="engine_component"
+    p_lat=p_lat,
+    p_lng=p_lng,
+    key="fixed_voice_engine"
 )            
 
 with col_i:
