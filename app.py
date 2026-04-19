@@ -95,7 +95,15 @@ class BlindProcessor(VideoProcessorBase):
 # ==========================================
 st.markdown('<div class="main-header"><h1>👁️ Blind Assistant</h1></div>', unsafe_allow_html=True)
 
-my_voice_engine = components.declare_component("my_voice_engine", path="voice_engine")
+# Correct Path Handling for Streamlit Cloud
+PARENT_DIR = os.path.dirname(os.path.abspath(__file__))
+VOICE_DIR = os.path.join(PARENT_DIR, "voice_engine")
+
+try:
+    my_voice_engine = components.declare_component("my_voice_engine", path=VOICE_DIR)
+except Exception as e:
+    st.error(f"Voice Engine Load Error: {e}")
+
 location = streamlit_geolocation()
 user_lat = location.get('latitude') if location else None
 user_lng = location.get('longitude') if location else None
