@@ -14,8 +14,8 @@ window.currentLng = null;
 window.currentSteps = [];
 window.lastNavSpeak = 0;
 
-function updateStatus(msg, color='#666') {
-    let el = document.getElementById("gps-tracker");
+function updateStatus(msg, color='#64748b') {
+    let el = document.getElementById("gps");
     if(el) {
         el.innerText = msg;
         el.style.color = color;
@@ -32,27 +32,16 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
 function unlockVoice() {
     try {
         window.voiceUnlocked = true;
-        // Prime the engine with a silent/brief utterance
-        const p = new SpeechSynthesisUtterance("Assistant Active");
-        p.volume = 0; // Silent prime
+        const p = new SpeechSynthesisUtterance("Voice Assistant Active");
+        p.rate = 1.0;
         window.speechSynthesis.speak(p);
         
-        // Real welcome message
-        setTimeout(() => speak("Voice Assistant Unlocked. Checking sensors.", true), 100);
-
-        document.getElementById("unlock-btn").style.display = 'none';
-        document.getElementById("gps-tracker").style.display = 'block';
-        updateStatus("GPS: Seeking signal...");
-        
-        navigator.geolocation.watchPosition((p) => {
-            window.currentLat = p.coords.latitude;
-            window.currentLng = p.coords.longitude;
-            updateStatus("GPS Live: " + p.coords.latitude.toFixed(4) + ", " + p.coords.longitude.toFixed(4), "#00d4aa");
-        }, (e) => {
-            updateStatus("GPS Error: " + e.message, "#ff6b6b");
-        }, {enableHighAccuracy: true });
+        let btn = document.getElementById("unlock-btn");
+        btn.classList.add("active");
+        btn.innerText = "✔️ VOICE ASSISTANT LIVE";
+        updateStatus("Sensors Linked. Awaiting Data.");
     } catch(e) {
-        alert("Audio Init Error: " + e.message);
+        console.error(e);
     }
 }
 
@@ -60,32 +49,36 @@ window.unlockVoice = unlockVoice;
 
 function speak(text, prio=false) {
     if (!window.voiceUnlocked) return;
+    // Don't interrupt if someone is already talking unless it's a priority alert
     if (window.speechSynthesis.speaking && !prio) return;
     if (prio) window.speechSynthesis.cancel();
+    
     let u = new SpeechSynthesisUtterance(text); 
-    u.rate = 0.9;
+    u.rate = 1.0;
     window.speechSynthesis.speak(u);
 }
 
-// Navigation background check
+// Navigation Loop (1s)
 setInterval(() => {
     if (window.currentSteps && window.currentSteps.length > 0 && window.navIdx < window.currentSteps.length && window.currentLat) {
         let t = window.currentSteps[window.navIdx];
         let d = calculateDistance(window.currentLat, window.currentLng, t.lat, t.lng);
         
         let now = Date.now();
-        if ((now - window.lastNavSpeak) > 30000) {
-           speak("Continue: " + t.text);
+        // Periodic Nav Reminder (50s)
+        if ((now - window.lastNavSpeak) > 50000) {
+           speak("Stay on path: " + t.text);
            window.lastNavSpeak = now;
         }
 
+        // Auto Advance (15m)
         if (d < 15) {
             window.navIdx++;
             if(window.navIdx < window.currentSteps.length) {
                speak("Now, " + window.currentSteps[window.navIdx].text, true);
                window.lastNavSpeak = Date.now();
             } else {
-               speak("You have arrived.", true);
+               speak("Destination reached. You have arrived.", true);
                window.currentSteps = [];
             }
         }
@@ -97,50 +90,58 @@ function onRender(event) {
     let dets = data.detections || [];
     let steps = data.nav_steps || [];
     
-    // Process new steps
+    // 1. Sync GPS
+    if (data.p_lat && data.p_lng) {
+        window.currentLat = data.p_lat;
+        window.currentLng = data.p_lng;
+        updateStatus("Navigation Track Active", "#10b981");
+    }
+
+    // 2. Sync Route
     let shash = JSON.stringify(steps);
     if (shash !== window.currentRouteHash) {
         window.currentRouteHash = shash;
         window.currentSteps = steps;
         window.navIdx = 0;
         if(steps.length > 0) {
-            speak("Navigation starting. " + steps[0].text, true);
+            speak("Route updated. " + steps[0].text, true);
             window.lastNavSpeak = Date.now();
         }
     }
 
-    // Process Detections
-    if (dets.length > 0 && data.engine_active) {
+    // 3. Sync Detections (Avoid Echo)
+    if (dets.length > 0 && data.engine_active && window.voiceUnlocked) {
         let isDanger = false;
-        let tParts = [];
+        let objects = [];
         let seen = new Set();
+        
         for (let d of dets) {
             if(!seen.has(d.label)) {
-                tParts.push(d.label + " " + d.pos);
+                objects.push(d.label + " " + d.pos);
                 seen.add(d.label);
                 if(d.dist === 'near') isDanger = true;
             }
-            if(tParts.length >= 2) break;
+            if(objects.length >= 2) break; // Maximum 2 objects per sentence for clarity
         }
-        if(tParts.length > 0) {
-            let msg = (isDanger ? "Watch out! " : "I see ") + tParts.join(" and ");
+        
+        if(objects.length > 0) {
+            let combinedMsg = (isDanger ? "Watch out! " : "Ahead is ") + objects.join(" and ");
             let now = Date.now();
-            // 9 second throttle
-            if(window.lastSpeakStr !== msg || (now - window.lastSpeakTime > 9000)) {
-                speak(msg, isDanger);
-                window.lastSpeakStr = msg;
+            
+            // INCREASED THROTTLE: 15 seconds for unique messages
+            if(window.lastSpeakStr !== combinedMsg || (now - window.lastSpeakTime > 15000)) {
+                speak(combinedMsg, isDanger);
+                window.lastSpeakStr = combinedMsg;
                 window.lastSpeakTime = now;
             }
         }
     }
 
-    sendMessageToStreamlit("setFrameHeight", {height: 120});
+    sendMessageToStreamlit("setFrameHeight", {height: 130});
 }
 
 window.addEventListener("message", (e) => {
-    if(e.data.type === "streamlit:render") {
-        onRender(e);
-    }
+    if(e.data.type === "streamlit:render") onRender(e);
 });
 
 window.addEventListener("load", () => {
