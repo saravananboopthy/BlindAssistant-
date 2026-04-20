@@ -32,7 +32,10 @@ if "state" not in st.session_state:
     st.session_state.state = {
         "nav_steps": [], "nav_idx": 0, "active": False, 
         "last_nav_msg": "", "obj_memory": {}, "run_camera": True,
-        "last_nav_time": 0, "active_nav_voice": "", "active_alert_voice": "", "voice_expiry": 0
+        "last_nav_time": 0,
+        "nav_voice_token": "", "alert_voice_token": "",
+        "active_nav_voice": "", "active_alert_voice": "",
+        "voice_nav_expiry": 0, "voice_alert_expiry": 0
     }
 
 # ==========================================
@@ -46,22 +49,41 @@ class VisionProcessor(VideoProcessorBase):
     def __init__(self):
         self.lock = threading.Lock()
         self.detections = []
+        self._frame_count = {}  # tracks consecutive frame hits per label+pos
+
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
-        # Lowered confidence from 0.45 to 0.35 to catch MORE objects correctly on mobile cameras
-        res = model(img, conf=0.35, verbose=False)[0]
-        now = []
+        # Confidence 0.45 — high enough to avoid false positives
+        res = model(img, conf=0.45, verbose=False)[0]
         h, w, _ = img.shape
+        found_this_frame = set()
+        candidates = []
         for b in res.boxes:
             x1, y1, x2, y2 = map(int, b.xyxy[0])
+            bw, bh = x2 - x1, y2 - y1
+            # Skip tiny/noisy boxes (must be at least 40px wide and tall)
+            if bw < 40 or bh < 40:
+                continue
             label = model.names[int(b.cls[0])]
-            pos = "left" if (x1+x2)/2 < w*0.33 else "right" if (x1+x2)/2 > w*0.66 else "ahead"
-            width = x2 - x1
-            if width > 400: dist = "very close"
-            elif width > 200: dist = "near"
-            else: dist = "far"
-            now.append({"label": label, "pos": pos, "dist": dist})
-        with self.lock: self.detections = now
+            cx = (x1 + x2) / 2
+            pos = "left" if cx < w * 0.33 else "right" if cx > w * 0.66 else "ahead"
+            if bw > 400:   dist = "very close"
+            elif bw > 200: dist = "near"
+            else:           dist = "far"
+            key = f"{label}_{pos}"
+            found_this_frame.add(key)
+            self._frame_count[key] = self._frame_count.get(key, 0) + 1
+            # Only include if seen in at least 2 consecutive frames
+            if self._frame_count[key] >= 2:
+                candidates.append({"label": label, "pos": pos, "dist": dist})
+
+        # Reset count for labels not seen this frame
+        for key in list(self._frame_count.keys()):
+            if key not in found_this_frame:
+                self._frame_count[key] = 0
+
+        with self.lock:
+            self.detections = candidates
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 # ==========================================
@@ -104,16 +126,14 @@ def get_walking_directions(source, dest, api_key):
             waypoints = interpolate_waypoints(prev_lat, prev_lng, end_lat, end_lng, segment_m=10)
             for i, wp in enumerate(waypoints):
                 seg_m = wp["dist_m"]
+                # Short speech: "Turn left, 10 meters" / "Straight, 10 meters"
                 if i == 0:
-                    speech = f"{action} for {seg_m} meters"
+                    speech = f"{action}, {seg_m} meters"
                 else:
-                    speech = f"Continue straight for {seg_m} meters"
+                    speech = f"Straight, {seg_m} meters"
                 micro_steps.append({
-                    "text": speech,
-                    "speech": speech,
-                    "lat": wp["lat"],
-                    "lng": wp["lng"],
-                    "seg_m": seg_m
+                    "text": speech, "speech": speech,
+                    "lat": wp["lat"], "lng": wp["lng"], "seg_m": seg_m
                 })
             prev_lat, prev_lng = end_lat, end_lng
         return micro_steps, None
