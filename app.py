@@ -219,39 +219,24 @@ with col_c:
         if objs:
             st.write(", ".join([f"{o['label']} at {o['pos']} ({o['dist']})" for o in objs]))
             now = time.time()
-            grouped_alerts = []
-            label_counts = Counter(o['label'] for o in objs)
-            processed_labels = set()
-            
-            for o in objs:
+            if len(objs) >= 2:
+                tag = "multiple_objects_alert"
+                if tag not in st.session_state.state["obj_memory"] or now - st.session_state.state["obj_memory"][tag] > 20:
+                    alert_instruction = "Multiple objects are present, please stop or wait."
+                    st.session_state.state["obj_memory"][tag] = now
+            elif len(objs) == 1:
+                o = objs[0]
                 label = o.get('label', 'object')
-                if label in processed_labels:
-                    continue
-                
-                if label_counts[label] > 1:
-                    tag = f"multiple_{label}"
-                    if tag not in st.session_state.state["obj_memory"] or now - st.session_state.state["obj_memory"][tag] > 20:
-                        grouped_alerts.append(f"Multiple {label}s detected, please stop")
-                        st.session_state.state["obj_memory"][tag] = now
-                    processed_labels.add(label)
-                else:
-                    pos = o.get('pos', 'ahead')
-                    tag = f"{label}_{pos}"
-                    if tag not in st.session_state.state["obj_memory"] or now - st.session_state.state["obj_memory"][tag] > 20:
-                        if pos == "left":
-                            grouped_alerts.append(f"{label} is on your left, move right")
-                        elif pos == "right":
-                            grouped_alerts.append(f"{label} is on your right, move left")
-                        else:
-                            grouped_alerts.append(f"{label} is ahead, move left or right")
-                        st.session_state.state["obj_memory"][tag] = now
-                    processed_labels.add(label)
-            
-            if grouped_alerts:
-                if len(grouped_alerts) >= 3:
-                    alert_instruction = "Multiple distinct objects detected around you. Please stop."
-                else:
-                    alert_instruction = ". ".join(grouped_alerts)
+                pos = o.get('pos', 'ahead')
+                tag = f"{label}_{pos}"
+                if tag not in st.session_state.state["obj_memory"] or now - st.session_state.state["obj_memory"][tag] > 20:
+                    if pos == "left":
+                        alert_instruction = f"{label} is on your left, move right."
+                    elif pos == "right":
+                        alert_instruction = f"{label} is on your right, move left."
+                    else:
+                        alert_instruction = f"{label} is ahead, move left or right."
+                    st.session_state.state["obj_memory"][tag] = now
 
 # ==========================================
 # MASTER SYNC VOICE ENGINE
