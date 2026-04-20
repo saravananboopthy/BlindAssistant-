@@ -200,21 +200,21 @@ voice_hub = json.dumps({
     "alert": st.session_state.state.get("active_alert_voice", "")
 })
 
-components.html(f"""
+html_code = """
     <div style="background:#f1f5f9; border:1px solid #cbd5e1; padding:10px; border-radius:10px; text-align:center;">
         <button id="vbtn" onclick="lck()" style="background:#ef4444; color:white; border:none; padding:10px; border-radius:8px; cursor:pointer; font-weight:bold; width:100%; font-size:16px;">
             🔊 TAP TO SYNC BRAIN & VOICE 🚨
         </button>
     </div>
     <script>
-    const vdata = {voice_hub};
-    function lck() {{ localStorage.setItem('v_unlocked', 'true'); update(); speakQueue("Brain synchronized. Ready."); }}
-    function update() {{ if(localStorage.getItem('v_unlocked') === 'true') {{ let b = document.getElementById('vbtn'); b.style.background = "#10b981"; b.innerText = "✔️ VOICE SYNCED"; }} }}
+    const vdata = VOICE_DATA_PLACEHOLDER;
+    function lck() { localStorage.setItem('v_unlocked', 'true'); update(); speakQueue("Brain synchronized. Ready."); }
+    function update() { if(localStorage.getItem('v_unlocked') === 'true') { let b = document.getElementById('vbtn'); b.style.background = "#10b981"; b.innerText = "✔️ VOICE SYNCED"; } }
     
     window.speechQueue = window.speechQueue || [];
     window.isSpeakingNow = window.isSpeakingNow || false;
 
-    function processQueue() {{
+    function processQueue() {
         if(window.isSpeakingNow || window.speechQueue.length === 0) return;
         window.isSpeakingNow = true;
         let t = window.speechQueue.shift();
@@ -225,43 +225,45 @@ components.html(f"""
         // Find a Female Voice
         let voices = window.speechSynthesis.getVoices();
         let femaleVoice = voices.find(v => v.name.includes('Female') || v.name.includes('Zira') || v.name.includes('Samantha') || v.name.includes('Victoria') || v.name.includes('Google US English'));
-        if (femaleVoice) {{
+        if (femaleVoice) {
             u.voice = femaleVoice;
-        }}
+        }
         
-        u.onend = function() {{ window.isSpeakingNow = false; processQueue(); }};
-        u.onerror = function() {{ window.isSpeakingNow = false; processQueue(); }};
+        u.onend = function() { window.isSpeakingNow = false; processQueue(); };
+        u.onerror = function() { window.isSpeakingNow = false; processQueue(); };
         window.speechSynthesis.speak(u);
-    }}
+    }
 
-    function speakQueue(t) {{
+    function speakQueue(t) {
         if(localStorage.getItem('v_unlocked') !== 'true') return;
         window.speechQueue.push(t);
         processQueue();
-    }}
+    }
     
     // Ensure voices are loaded (some browsers need this)
-    window.speechSynthesis.onvoiceschanged = function() {{
+    window.speechSynthesis.onvoiceschanged = function() {
         // Optional: trigger a queue process if needed
-    }};
+    };
 
     update();
     
-    if (vdata.nav || vdata.alert) {{
+    if (vdata.nav || vdata.alert) {
         const h = vdata.nav + "|" + vdata.alert;
-        if(window.lastH !== h) {{
+        if(window.lastH !== h) {
             // Add to Voice Queue sequentially. Navigation first, then Alerts.
-            if (vdata.nav) {{
+            if (vdata.nav) {
                 speakQueue(vdata.nav);
-            }}
-            if (vdata.alert) {{
+            }
+            if (vdata.alert) {
                 speakQueue(vdata.alert);
-            }}
+            }
             window.lastH = h;
-        }}
-    }}
+        }
+    }
     </script>
-""", height=85, key="voice_engine_stable")
+""".replace("VOICE_DATA_PLACEHOLDER", voice_hub)
+
+components.html(html_code, height=85, key="voice_engine_stable")
 
 if st.session_state.state["active"] or st.session_state.state["run_camera"]:
     time.sleep(1.2)
