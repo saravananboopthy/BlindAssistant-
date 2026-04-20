@@ -263,7 +263,7 @@ html_code = """
     </script>
 """.replace("VOICE_DATA_PLACEHOLDER", voice_hub)
 
-components.html(html_code, height=85, key="voice_engine_stable")
+st.components.v1.html(html_code, height=85)
 
 if st.session_state.state["active"] or st.session_state.state["run_camera"]:
     time.sleep(1.2)
