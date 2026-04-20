@@ -52,14 +52,14 @@ class VisionProcessor(VideoProcessorBase):
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
-        res = model(img, conf=0.40, verbose=False)[0]
+        res = model(img, conf=0.55, verbose=False)[0]
         h, w, _ = img.shape
         found_this_frame = set()
         candidates = []
         for b in res.boxes:
             x1, y1, x2, y2 = map(int, b.xyxy[0])
             bw, bh = x2 - x1, y2 - y1
-            if bw < 40 or bh < 40:
+            if bw < 50 or bh < 50:
                 continue
             label = model.names[int(b.cls[0])]
             cx = (x1 + x2) / 2
@@ -219,27 +219,39 @@ with col_c:
         if objs:
             st.write(", ".join([f"{o['label']} at {o['pos']} ({o['dist']})" for o in objs]))
             now = time.time()
-            new_objs = []
-            for o in objs:
-                tag = f"{o['label']}_{o['pos']}"
-                if tag not in st.session_state.state["obj_memory"] or now - st.session_state.state["obj_memory"][tag] > 20:
-                    new_objs.append(o)
-                    st.session_state.state["obj_memory"][tag] = now
+            grouped_alerts = []
+            label_counts = Counter(o['label'] for o in objs)
+            processed_labels = set()
             
-            if len(new_objs) >= 3:
-                alert_instruction = "Multiple objects detected. Please stop."
-            elif len(new_objs) > 0:
-                parts = []
-                for o in new_objs:
-                    label = o.get('label', 'object')
-                    pos   = o.get('pos', 'ahead')
-                    if pos == "left":
-                        parts.append(f"{label} is on your left, move right")
-                    elif pos == "right":
-                        parts.append(f"{label} is on your right, move left")
-                    else:
-                        parts.append(f"{label} is ahead, move left or right")
-                alert_instruction = ". ".join(parts)
+            for o in objs:
+                label = o.get('label', 'object')
+                if label in processed_labels:
+                    continue
+                
+                if label_counts[label] > 1:
+                    tag = f"multiple_{label}"
+                    if tag not in st.session_state.state["obj_memory"] or now - st.session_state.state["obj_memory"][tag] > 20:
+                        grouped_alerts.append(f"Multiple {label}s detected, please stop")
+                        st.session_state.state["obj_memory"][tag] = now
+                    processed_labels.add(label)
+                else:
+                    pos = o.get('pos', 'ahead')
+                    tag = f"{label}_{pos}"
+                    if tag not in st.session_state.state["obj_memory"] or now - st.session_state.state["obj_memory"][tag] > 20:
+                        if pos == "left":
+                            grouped_alerts.append(f"{label} is on your left, move right")
+                        elif pos == "right":
+                            grouped_alerts.append(f"{label} is on your right, move left")
+                        else:
+                            grouped_alerts.append(f"{label} is ahead, move left or right")
+                        st.session_state.state["obj_memory"][tag] = now
+                    processed_labels.add(label)
+            
+            if grouped_alerts:
+                if len(grouped_alerts) >= 3:
+                    alert_instruction = "Multiple distinct objects detected around you. Please stop."
+                else:
+                    alert_instruction = ". ".join(grouped_alerts)
 
 # ==========================================
 # MASTER SYNC VOICE ENGINE
