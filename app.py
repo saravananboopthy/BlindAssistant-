@@ -243,25 +243,22 @@ with col_c:
                     break
 
 # ==========================================
-# MASTER SYNC VOICE QUEUE
+# MASTER SYNC VOICE QUEUE  (parent-page queue — persists across reruns)
 # ==========================================
-# Each new nav/alert message gets a unique token so localStorage dedup works correctly
-# even when the message text is the same (e.g. same distance reminder value)
 now_ts = int(time.time())
 
 if nav_instruction:
-    token = f"{nav_instruction}||{now_ts}"
+    tok = f"{nav_instruction}||{now_ts}"
     st.session_state.state["active_nav_voice"]  = nav_instruction
-    st.session_state.state["nav_voice_token"]   = token
+    st.session_state.state["nav_voice_token"]   = tok
     st.session_state.state["voice_nav_expiry"]  = now_ts + 10
 
 if alert_instruction:
-    token = f"{alert_instruction}||{now_ts}"
+    tok = f"{alert_instruction}||{now_ts}"
     st.session_state.state["active_alert_voice"]  = alert_instruction
-    st.session_state.state["alert_voice_token"]   = token
+    st.session_state.state["alert_voice_token"]   = tok
     st.session_state.state["voice_alert_expiry"]  = now_ts + 10
 
-# Clear expired messages
 if now_ts > st.session_state.state.get("voice_nav_expiry", 0):
     st.session_state.state["active_nav_voice"] = ""
     st.session_state.state["nav_voice_token"]  = ""
@@ -270,83 +267,110 @@ if now_ts > st.session_state.state.get("voice_alert_expiry", 0):
     st.session_state.state["active_alert_voice"] = ""
     st.session_state.state["alert_voice_token"]  = ""
 
-voice_hub = json.dumps({
-    "nav":         st.session_state.state.get("active_nav_voice", ""),
-    "nav_token":   st.session_state.state.get("nav_voice_token", ""),
-    "alert":       st.session_state.state.get("active_alert_voice", ""),
-    "alert_token": st.session_state.state.get("alert_voice_token", ""),
-})
+nav_txt   = st.session_state.state.get("active_nav_voice", "")
+nav_tok   = st.session_state.state.get("nav_voice_token", "")
+alert_txt = st.session_state.state.get("active_alert_voice", "")
+alert_tok = st.session_state.state.get("alert_voice_token", "")
 
-html_code = """
-    <div style="background:#f1f5f9; border:1px solid #cbd5e1; padding:10px; border-radius:10px; text-align:center;">
-        <button id="vbtn" onclick="lck()" style="background:#ef4444; color:white; border:none; padding:10px; border-radius:8px; cursor:pointer; font-weight:bold; width:100%; font-size:16px;">
-            🔊 TAP TO SYNC BRAIN & VOICE 🚨
-        </button>
-    </div>
-    <script>
-    const vdata = VOICE_DATA_PLACEHOLDER;
+# --- Unlock button (rendered once via iframe) ---
+st.components.v1.html("""
+<div style="background:#f1f5f9;border:1px solid #cbd5e1;padding:10px;border-radius:10px;text-align:center;">
+  <button onclick="parent.baUnlock && parent.baUnlock()"
+    style="background:#ef4444;color:white;border:none;padding:10px;border-radius:8px;
+           cursor:pointer;font-weight:bold;width:100%;font-size:16px;"
+    id="ub">🔊 TAP TO SYNC BRAIN &amp; VOICE 🚨</button>
+</div>
+<script>
+  // Reflect unlock state on button
+  if(parent.localStorage && parent.localStorage.getItem('ba_unlocked') === '1'){
+    document.getElementById('ub').style.background='#10b981';
+    document.getElementById('ub').innerText='✔️ VOICE SYNCED';
+  }
+</script>
+""", height=70)
 
-    function lck() {
-        localStorage.setItem('v_unlocked', 'true');
-        updateBtn();
-        doSpeak("Brain synchronized. Ready.", "init");
-    }
+# --- Parent-page speech queue (persists across reruns) ---
+voice_js = f"""
+<script>
+(function(){{
+  // ---- one-time init of queue on parent window ----
+  if(!window.baQueue)     window.baQueue     = [];
+  if(!window.baSpeaking)  window.baSpeaking  = false;
+  if(!window.baTokSeen)   window.baTokSeen   = {{}};
 
-    function updateBtn() {
-        if(localStorage.getItem('v_unlocked') === 'true') {
-            let b = document.getElementById('vbtn');
-            if(b) { b.style.background = "#10b981"; b.innerText = "✔️ VOICE SYNCED"; }
-        }
-    }
+  function getVoice(){{
+    let vs = window.speechSynthesis.getVoices();
+    return vs.find(v=>v.name.includes('Zira')||v.name.includes('Samantha')||
+                      v.name.includes('Victoria')||v.name.includes('Female')||
+                      v.name.includes('Google US English'))||vs[0]||null;
+  }}
 
-    function getVoice() {
-        let voices = window.speechSynthesis.getVoices();
-        return voices.find(v => v.name.includes('Zira') || v.name.includes('Samantha') ||
-                                v.name.includes('Victoria') || v.name.includes('Female') ||
-                                v.name.includes('Google US English')) || null;
-    }
+  function runQueue(){{
+    if(window.baSpeaking || window.baQueue.length===0) return;
+    window.baSpeaking = true;
+    let txt = window.baQueue.shift();
+    let u   = new SpeechSynthesisUtterance(txt);
+    u.rate  = 0.92;
+    let fv  = getVoice();
+    if(fv) u.voice = fv;
+    u.onend  = function(){{ window.baSpeaking=false; runQueue(); }};
+    u.onerror= function(){{ window.baSpeaking=false; runQueue(); }};
+    window.speechSynthesis.speak(u);
+  }}
 
-    function doSpeak(text, token) {
-        if(localStorage.getItem('v_unlocked') !== 'true') return;
-        // Dedup: localStorage persists across iframe reloads caused by st.rerun()
-        if(localStorage.getItem('vTok_' + token) === '1') return;
-        localStorage.setItem('vTok_' + token, '1');
-        // Expire old tokens after 30s to avoid localStorage bloat
-        setTimeout(function() { localStorage.removeItem('vTok_' + token); }, 30000);
+  function enqueue(txt, tok){{
+    if(!window.baUnlocked) return;
+    if(window.baTokSeen[tok]) return;   // dedup
+    window.baTokSeen[tok] = true;
+    // Auto-clean token after 30s
+    setTimeout(function(){{ delete window.baTokSeen[tok]; }}, 30000);
+    window.baQueue.push(txt);
+    runQueue();
+  }}
 
-        window.speechSynthesis.cancel();
-        let u = new SpeechSynthesisUtterance(text);
-        u.rate = 0.92;
-        let fv = getVoice();
-        if(fv) u.voice = fv;
-        window.speechSynthesis.speak(u);
-    }
+  // Unlock function called by the button
+  window.baUnlock = function(){{
+    window.baUnlocked = true;
+    localStorage.setItem('ba_unlocked','1');
+    window.baQueue = [];   // fresh queue on unlock
+    window.baSpeaking = false;
+    window.speechSynthesis.cancel();
+    enqueue('Voice ready. Navigation active.', 'unlock_init');
+    // Update button
+    try{{
+      let fr = document.querySelector('iframe');
+      if(fr){{
+        let b = fr.contentDocument.getElementById('ub');
+        if(b){{ b.style.background='#10b981'; b.innerText='✔️ VOICE SYNCED'; }}
+      }}
+    }}catch(e){{}}
+  }};
 
-    // Wait for voices to load on first render (Chrome async issue)
-    function trySpeak() {
-        if(vdata.nav && vdata.nav_token) {
-            doSpeak(vdata.nav, vdata.nav_token);
-        }
-        if(vdata.alert && vdata.alert_token) {
-            let delay = (vdata.nav && vdata.nav_token) ? 1500 : 0;
-            setTimeout(function() {
-                doSpeak(vdata.alert, vdata.alert_token);
-            }, delay);
-        }
-    }
+  // Restore unlock state across page refresh
+  if(localStorage.getItem('ba_unlocked')==='1') window.baUnlocked = true;
 
-    updateBtn();
+  // Enqueue nav first, then alert (sequential — alert waits for nav to finish)
+  const navTxt   = {json.dumps(nav_txt)};
+  const navTok   = {json.dumps(nav_tok)};
+  const alertTxt = {json.dumps(alert_txt)};
+  const alertTok = {json.dumps(alert_tok)};
 
-    if(window.speechSynthesis.getVoices().length > 0) {
-        trySpeak();
-    } else {
-        window.speechSynthesis.onvoiceschanged = function() { trySpeak(); };
-    }
-    </script>
-""".replace("VOICE_DATA_PLACEHOLDER", voice_hub)
+  function pushMessages(){{
+    if(navTxt && navTok)   enqueue(navTxt, navTok);
+    if(alertTxt && alertTok) enqueue(alertTxt, alertTok);
+  }}
 
-st.components.v1.html(html_code, height=85)
+  if(window.speechSynthesis.getVoices().length > 0){{
+    pushMessages();
+  }} else {{
+    window.speechSynthesis.onvoiceschanged = function(){{ pushMessages(); }};
+  }}
+}})();
+</script>
+"""
+st.markdown(voice_js, unsafe_allow_html=True)
 
 if st.session_state.state["active"] or st.session_state.state["run_camera"]:
     time.sleep(1.2)
     st.rerun()
+
