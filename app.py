@@ -52,7 +52,7 @@ class VisionProcessor(VideoProcessorBase):
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
-        res = model(img, conf=0.45, verbose=False)[0]
+        res = model(img, conf=0.40, verbose=False)[0]
         h, w, _ = img.shape
         found_this_frame = set()
         candidates = []
@@ -218,20 +218,27 @@ with col_c:
         if objs:
             st.write(", ".join([f"{o['label']} at {o['pos']} ({o['dist']})" for o in objs]))
             now = time.time()
+            new_objs = []
             for o in objs:
                 tag = f"{o['label']}_{o['pos']}"
                 if tag not in st.session_state.state["obj_memory"] or now - st.session_state.state["obj_memory"][tag] > 20:
+                    new_objs.append(o)
+                    st.session_state.state["obj_memory"][tag] = now
+            
+            if len(new_objs) >= 3:
+                alert_instruction = "Multiple objects detected. Please stop."
+            elif len(new_objs) > 0:
+                parts = []
+                for o in new_objs:
                     label = o.get('label', 'object')
                     pos   = o.get('pos', 'ahead')
-                    dist  = o.get('dist', 'near')
                     if pos == "left":
-                        alert_instruction = f"{label} is on your left, move right"
+                        parts.append(f"{label} is on your left, move right")
                     elif pos == "right":
-                        alert_instruction = f"{label} is on your right, move left"
+                        parts.append(f"{label} is on your right, move left")
                     else:
-                        alert_instruction = f"{label} is ahead, move left or right. It is {dist}."
-                    st.session_state.state["obj_memory"][tag] = now
-                    break
+                        parts.append(f"{label} is ahead, move left or right")
+                alert_instruction = ". ".join(parts)
 
 # ==========================================
 # MASTER SYNC VOICE ENGINE
