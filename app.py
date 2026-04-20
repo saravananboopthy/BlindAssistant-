@@ -150,7 +150,14 @@ with col_v:
             key="v_stream",
             video_processor_factory=VisionProcessor,
             rtc_configuration=RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}),
-            media_stream_constraints={"video": True, "audio": False}
+            media_stream_constraints={
+                "video": {
+                    "facingMode": {"ideal": "environment"},
+                    "width":  {"ideal": 1280},
+                    "height": {"ideal": 720}
+                },
+                "audio": False
+            }
         )
 
 with col_c:
@@ -213,7 +220,7 @@ with col_c:
             now = time.time()
             for o in objs:
                 tag = f"{o['label']}_{o['pos']}"
-                if tag not in st.session_state.state["obj_memory"] or now - st.session_state.state["obj_memory"][tag] > 15:
+                if tag not in st.session_state.state["obj_memory"] or now - st.session_state.state["obj_memory"][tag] > 20:
                     label = o.get('label', 'object')
                     pos   = o.get('pos', 'ahead')
                     dist  = o.get('dist', 'near')
@@ -237,9 +244,11 @@ if nav_instruction:
     st.session_state.state["voice_nav_expiry"]  = now_ts + 10
 
 if alert_instruction:
-    st.session_state.state["active_alert_voice"] = alert_instruction
-    st.session_state.state["alert_voice_token"]  = f"a{now_ts}"
-    st.session_state.state["voice_alert_expiry"] = now_ts + 10
+    # Only create a new token if the alert text is different from what's already playing
+    if alert_instruction != st.session_state.state.get("active_alert_voice", ""):
+        st.session_state.state["active_alert_voice"] = alert_instruction
+        st.session_state.state["alert_voice_token"]  = f"a{now_ts}"
+        st.session_state.state["voice_alert_expiry"] = now_ts + 10
 
 if now_ts > st.session_state.state.get("voice_nav_expiry", 0):
     st.session_state.state["active_nav_voice"] = ""
