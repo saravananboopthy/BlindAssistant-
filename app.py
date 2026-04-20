@@ -243,21 +243,21 @@ with col_c:
                     break
 
 # ==========================================
-# MASTER SYNC VOICE QUEUE  (parent-page queue — persists across reruns)
+# MASTER SYNC VOICE QUEUE  (mobile-robust)
 # ==========================================
 now_ts = int(time.time())
 
 if nav_instruction:
     tok = f"{nav_instruction}||{now_ts}"
-    st.session_state.state["active_nav_voice"]  = nav_instruction
-    st.session_state.state["nav_voice_token"]   = tok
-    st.session_state.state["voice_nav_expiry"]  = now_ts + 10
+    st.session_state.state["active_nav_voice"] = nav_instruction
+    st.session_state.state["nav_voice_token"]  = tok
+    st.session_state.state["voice_nav_expiry"] = now_ts + 10
 
 if alert_instruction:
     tok = f"{alert_instruction}||{now_ts}"
-    st.session_state.state["active_alert_voice"]  = alert_instruction
-    st.session_state.state["alert_voice_token"]   = tok
-    st.session_state.state["voice_alert_expiry"]  = now_ts + 10
+    st.session_state.state["active_alert_voice"] = alert_instruction
+    st.session_state.state["alert_voice_token"]  = tok
+    st.session_state.state["voice_alert_expiry"] = now_ts + 10
 
 if now_ts > st.session_state.state.get("voice_nav_expiry", 0):
     st.session_state.state["active_nav_voice"] = ""
@@ -272,103 +272,155 @@ nav_tok   = st.session_state.state.get("nav_voice_token", "")
 alert_txt = st.session_state.state.get("active_alert_voice", "")
 alert_tok = st.session_state.state.get("alert_voice_token", "")
 
-# --- Unlock button (rendered once via iframe) ---
-st.components.v1.html("""
-<div style="background:#f1f5f9;border:1px solid #cbd5e1;padding:10px;border-radius:10px;text-align:center;">
-  <button onclick="parent.baUnlock && parent.baUnlock()"
-    style="background:#ef4444;color:white;border:none;padding:10px;border-radius:8px;
-           cursor:pointer;font-weight:bold;width:100%;font-size:16px;"
-    id="ub">🔊 TAP TO SYNC BRAIN &amp; VOICE 🚨</button>
+voice_block = f"""
+<div id="ba-wrap" style="background:#f1f5f9;border:1px solid #cbd5e1;
+     padding:10px;border-radius:10px;text-align:center;margin-top:6px;">
+  <button id="ba-btn"
+    onclick="window._baUnlock && window._baUnlock()"
+    style="background:#ef4444;color:white;border:none;padding:12px;
+           border-radius:8px;cursor:pointer;font-weight:bold;
+           width:100%;font-size:16px;touch-action:manipulation;">
+    🔊 TAP TO ACTIVATE VOICE 🚨
+  </button>
+  <div id="ba-status" style="font-size:11px;color:#64748b;margin-top:4px;">
+    Tap the button to enable voice (required on mobile)
+  </div>
 </div>
+
 <script>
-  // Reflect unlock state on button
-  if(parent.localStorage && parent.localStorage.getItem('ba_unlocked') === '1'){
-    document.getElementById('ub').style.background='#10b981';
-    document.getElementById('ub').innerText='✔️ VOICE SYNCED';
-  }
-</script>
-""", height=70)
+(function() {{
 
-# --- Parent-page speech queue (persists across reruns) ---
-voice_js = f"""
-<script>
-(function(){{
-  // ---- one-time init of queue on parent window ----
-  if(!window.baQueue)     window.baQueue     = [];
-  if(!window.baSpeaking)  window.baSpeaking  = false;
-  if(!window.baTokSeen)   window.baTokSeen   = {{}};
+  /* ── ONE-TIME INIT ── persists across Streamlit reruns on same page ── */
+  if (typeof window._baInited === 'undefined') {{
+    window._baInited  = true;
+    window._baQueue   = [];
+    window._baSpeaking = false;
+    window._baTok     = {{}};
+    window._baUnlocked = (localStorage.getItem('ba_unlocked') === '1');
 
-  function getVoice(){{
-    let vs = window.speechSynthesis.getVoices();
-    return vs.find(v=>v.name.includes('Zira')||v.name.includes('Samantha')||
-                      v.name.includes('Victoria')||v.name.includes('Female')||
-                      v.name.includes('Google US English'))||vs[0]||null;
-  }}
+    /* pick a clear voice */
+    window._baVoice = function() {{
+      let vs = window.speechSynthesis.getVoices();
+      return vs.find(v =>
+        v.name.includes('Zira') || v.name.includes('Samantha') ||
+        v.name.includes('Victoria') || v.name.includes('Female') ||
+        v.name.includes('Google US English')
+      ) || vs[0] || null;
+    }};
 
-  function runQueue(){{
-    if(window.baSpeaking || window.baQueue.length===0) return;
-    window.baSpeaking = true;
-    let txt = window.baQueue.shift();
-    let u   = new SpeechSynthesisUtterance(txt);
-    u.rate  = 0.92;
-    let fv  = getVoice();
-    if(fv) u.voice = fv;
-    u.onend  = function(){{ window.baSpeaking=false; runQueue(); }};
-    u.onerror= function(){{ window.baSpeaking=false; runQueue(); }};
-    window.speechSynthesis.speak(u);
-  }}
+    /* run next item in queue */
+    window._baRun = function() {{
+      if (window._baSpeaking || window._baQueue.length === 0) return;
+      window._baSpeaking = true;
+      let txt = window._baQueue.shift();
+      let u   = new SpeechSynthesisUtterance(txt);
+      u.rate   = 0.88;
+      u.volume = 1.0;
+      let fv = window._baVoice();
+      if (fv) u.voice = fv;
+      u.onend  = function() {{ window._baSpeaking = false; window._baRun(); }};
+      u.onerror= function() {{ window._baSpeaking = false; window._baRun(); }};
+      window.speechSynthesis.speak(u);
+    }};
 
-  function enqueue(txt, tok){{
-    if(!window.baUnlocked) return;
-    if(window.baTokSeen[tok]) return;   // dedup
-    window.baTokSeen[tok] = true;
-    // Auto-clean token after 30s
-    setTimeout(function(){{ delete window.baTokSeen[tok]; }}, 30000);
-    window.baQueue.push(txt);
-    runQueue();
-  }}
+    /* enqueue with dedup */
+    window._baEnq = function(txt, tok) {{
+      if (!window._baUnlocked) return;
+      if (window._baTok[tok])  return;
+      window._baTok[tok] = true;
+      setTimeout(function() {{ delete window._baTok[tok]; }}, 30000);
+      window._baQueue.push(txt);
+      window._baRun();
+    }};
 
-  // Unlock function called by the button
-  window.baUnlock = function(){{
-    window.baUnlocked = true;
-    localStorage.setItem('ba_unlocked','1');
-    window.baQueue = [];   // fresh queue on unlock
-    window.baSpeaking = false;
-    window.speechSynthesis.cancel();
-    enqueue('Voice ready. Navigation active.', 'unlock_init');
-    // Update button
-    try{{
-      let fr = document.querySelector('iframe');
-      if(fr){{
-        let b = fr.contentDocument.getElementById('ub');
-        if(b){{ b.style.background='#10b981'; b.innerText='✔️ VOICE SYNCED'; }}
+    /* update button appearance */
+    window._baBtn = function() {{
+      let b = document.getElementById('ba-btn');
+      let s = document.getElementById('ba-status');
+      if (!b) return;
+      if (window._baUnlocked) {{
+        b.style.background = '#10b981';
+        b.innerText = '✔️ VOICE ACTIVE — Listening';
+        if (s) s.innerText = 'Voice engine running';
       }}
-    }}catch(e){{}}
-  }};
+    }};
 
-  // Restore unlock state across page refresh
-  if(localStorage.getItem('ba_unlocked')==='1') window.baUnlocked = true;
+    /* unlock — MUST be called directly from user tap (iOS requirement) */
+    window._baUnlock = function() {{
+      if (window._baUnlocked) return;   // already unlocked
+      window._baUnlocked = true;
+      localStorage.setItem('ba_unlocked', '1');
+      window._baQueue = [];
+      window._baSpeaking = false;
+      window.speechSynthesis.cancel();
+      window._baBtn();
+      /* speak welcome inside the gesture event — iOS needs this */
+      let u = new SpeechSynthesisUtterance('Voice ready. Navigation active.');
+      u.rate = 0.88; u.volume = 1.0;
+      let fv = window._baVoice();
+      if (fv) u.voice = fv;
+      u.onend  = function() {{ window._baSpeaking = false; window._baRun(); }};
+      u.onerror= function() {{ window._baSpeaking = false; window._baRun(); }};
+      window._baSpeaking = true;
+      window.speechSynthesis.speak(u);
+    }};
 
-  // Enqueue nav first, then alert (sequential — alert waits for nav to finish)
+    /* ── iOS keep-alive: resume if paused (iOS suspends after ~30s) ── */
+    setInterval(function() {{
+      if (window._baUnlocked && window.speechSynthesis.paused) {{
+        window.speechSynthesis.resume();
+      }}
+    }}, 5000);
+
+    /* ── Stuck-state watchdog (Android/iOS bug: speaking flag never clears) ── */
+    setInterval(function() {{
+      if (window._baSpeaking && !window.speechSynthesis.speaking &&
+          !window.speechSynthesis.pending) {{
+        window._baSpeaking = false;
+        window._baRun();
+      }}
+    }}, 3000);
+
+    /* ── Recover from background / screen-lock ── */
+    document.addEventListener('visibilitychange', function() {{
+      if (!document.hidden && window._baUnlocked) {{
+        setTimeout(function() {{
+          window.speechSynthesis.resume();
+          window._baSpeaking = false;
+          window._baRun();
+        }}, 600);
+      }}
+    }});
+  }}
+  /* ── END ONE-TIME INIT ── */
+
+  /* Always sync button on every rerun */
+  window._baBtn();
+
+  /* Inject current messages */
   const navTxt   = {json.dumps(nav_txt)};
   const navTok   = {json.dumps(nav_tok)};
   const alertTxt = {json.dumps(alert_txt)};
   const alertTok = {json.dumps(alert_tok)};
 
-  function pushMessages(){{
-    if(navTxt && navTok)   enqueue(navTxt, navTok);
-    if(alertTxt && alertTok) enqueue(alertTxt, alertTok);
+  function push() {{
+    if (navTxt && navTok)     window._baEnq(navTxt, navTok);
+    if (alertTxt && alertTok) window._baEnq(alertTxt, alertTok);
   }}
 
-  if(window.speechSynthesis.getVoices().length > 0){{
-    pushMessages();
+  /* Chrome/mobile loads voices async */
+  if (window.speechSynthesis.getVoices().length > 0) {{
+    push();
   }} else {{
-    window.speechSynthesis.onvoiceschanged = function(){{ pushMessages(); }};
+    window.speechSynthesis.onvoiceschanged = function() {{ push(); }};
+    /* fallback retry for stubborn mobile browsers */
+    setTimeout(push, 1500);
   }}
+
 }})();
 </script>
 """
-st.markdown(voice_js, unsafe_allow_html=True)
+st.markdown(voice_block, unsafe_allow_html=True)
 
 if st.session_state.state["active"] or st.session_state.state["run_camera"]:
     time.sleep(1.2)
