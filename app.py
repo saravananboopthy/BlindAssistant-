@@ -200,7 +200,7 @@ with col_c:
                 else:
                     nav_instruction = "You have arrived at your destination."
                     st.session_state.state["active"] = False
-            elif time_since_last > 10 and dist_m > 8:
+            elif time_since_last > 25 and dist_m > 8:
                 nav_instruction = f"{dist_m} meters remaining"
                 st.session_state.state["last_nav_time"] = now
 
@@ -253,7 +253,6 @@ nav_txt   = st.session_state.state.get("active_nav_voice", "")
 nav_tok   = st.session_state.state.get("nav_voice_token", "")
 alert_txt = st.session_state.state.get("active_alert_voice", "")
 alert_tok = st.session_state.state.get("alert_voice_token", "")
-combo_key = f"{nav_tok}|{alert_tok}"
 
 voice_html = ("""
 <div style="background:#f1f5f9;border:1px solid #cbd5e1;padding:10px;
@@ -268,14 +267,15 @@ voice_html = ("""
 <script>
 (function() {
   var NAV_TXT = __NAV_TXT__;
+  var NAV_TOK = __NAV_TOK__;
   var ALT_TXT = __ALT_TXT__;
-  var COMBO   = __COMBO__;
+  var ALT_TOK = __ALT_TOK__;
 
   function isUnlocked() { return localStorage.getItem('ba_unlocked') === '1'; }
   function isSeen(k)    { return localStorage.getItem('baSp_' + k) === '1'; }
   function markSeen(k)  {
     localStorage.setItem('baSp_' + k, '1');
-    setTimeout(function() { localStorage.removeItem('baSp_' + k); }, 30000);
+    setTimeout(function() { localStorage.removeItem('baSp_' + k); }, 35000);
   }
 
   function getVoice() {
@@ -298,14 +298,25 @@ voice_html = ("""
 
   function playMessages() {
     if (!isUnlocked()) return;
-    if (!COMBO || COMBO === '|' || isSeen(COMBO)) return;
-    markSeen(COMBO);
+
+    /* Check each message independently — alert firing does NOT re-trigger nav */
+    var navNew   = NAV_TXT && NAV_TOK && !isSeen('n_' + NAV_TOK);
+    var alertNew = ALT_TXT && ALT_TOK && !isSeen('a_' + ALT_TOK);
+    if (!navNew && !alertNew) return;
+
+    if (navNew)   markSeen('n_' + NAV_TOK);
+    if (alertNew) markSeen('a_' + ALT_TOK);
+
     window.speechSynthesis.cancel();
-    if (NAV_TXT) {
+
+    if (navNew && alertNew) {
+      /* Nav first, then alert after nav finishes */
       speakOne(NAV_TXT, function() {
-        if (ALT_TXT) { setTimeout(function(){ speakOne(ALT_TXT, null); }, 250); }
+        setTimeout(function() { speakOne(ALT_TXT, null); }, 250);
       });
-    } else if (ALT_TXT) {
+    } else if (navNew) {
+      speakOne(NAV_TXT, null);
+    } else {
       speakOne(ALT_TXT, null);
     }
   }
@@ -332,8 +343,9 @@ voice_html = ("""
 })();
 </script>
 """.replace("__NAV_TXT__", json.dumps(nav_txt))
+   .replace("__NAV_TOK__", json.dumps(nav_tok))
    .replace("__ALT_TXT__", json.dumps(alert_txt))
-   .replace("__COMBO__",   json.dumps(combo_key)))
+   .replace("__ALT_TOK__", json.dumps(alert_tok)))
 
 st.components.v1.html(voice_html, height=70)
 
