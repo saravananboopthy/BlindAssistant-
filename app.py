@@ -243,21 +243,21 @@ with col_c:
                     break
 
 # ==========================================
-# MASTER SYNC VOICE QUEUE  (mobile-robust)
+# MASTER SYNC VOICE QUEUE  (parent-page queue — persists across reruns)
 # ==========================================
 now_ts = int(time.time())
 
 if nav_instruction:
     tok = f"{nav_instruction}||{now_ts}"
-    st.session_state.state["active_nav_voice"] = nav_instruction
-    st.session_state.state["nav_voice_token"]  = tok
-    st.session_state.state["voice_nav_expiry"] = now_ts + 10
+    st.session_state.state["active_nav_voice"]  = nav_instruction
+    st.session_state.state["nav_voice_token"]   = tok
+    st.session_state.state["voice_nav_expiry"]  = now_ts + 10
 
 if alert_instruction:
     tok = f"{alert_instruction}||{now_ts}"
-    st.session_state.state["active_alert_voice"] = alert_instruction
-    st.session_state.state["alert_voice_token"]  = tok
-    st.session_state.state["voice_alert_expiry"] = now_ts + 10
+    st.session_state.state["active_alert_voice"]  = alert_instruction
+    st.session_state.state["alert_voice_token"]   = tok
+    st.session_state.state["voice_alert_expiry"]  = now_ts + 10
 
 if now_ts > st.session_state.state.get("voice_nav_expiry", 0):
     st.session_state.state["active_nav_voice"] = ""
@@ -272,34 +272,30 @@ nav_tok   = st.session_state.state.get("nav_voice_token", "")
 alert_txt = st.session_state.state.get("active_alert_voice", "")
 alert_tok = st.session_state.state.get("alert_voice_token", "")
 
+# --- Unified voice button + queue (works on laptop & mobile) ---
 voice_block = f"""
 <div id="ba-wrap" style="background:#f1f5f9;border:1px solid #cbd5e1;
      padding:10px;border-radius:10px;text-align:center;margin-top:6px;">
   <button id="ba-btn"
-    onclick="window._baUnlock && window._baUnlock()"
+    onclick="baUnlock()"
     style="background:#ef4444;color:white;border:none;padding:12px;
            border-radius:8px;cursor:pointer;font-weight:bold;
            width:100%;font-size:16px;touch-action:manipulation;">
-    🔊 TAP TO ACTIVATE VOICE 🚨
+    🔊 TAP TO SYNC BRAIN &amp; VOICE 🚨
   </button>
-  <div id="ba-status" style="font-size:11px;color:#64748b;margin-top:4px;">
-    Tap the button to enable voice (required on mobile)
-  </div>
 </div>
-
 <script>
 (function() {{
 
-  /* ── ONE-TIME INIT ── persists across Streamlit reruns on same page ── */
-  if (typeof window._baInited === 'undefined') {{
-    window._baInited  = true;
-    window._baQueue   = [];
-    window._baSpeaking = false;
-    window._baTok     = {{}};
-    window._baUnlocked = (localStorage.getItem('ba_unlocked') === '1');
+  /* ── ONE-TIME INIT: queue lives on window so it survives Streamlit reruns ── */
+  if (typeof window.baInited === 'undefined') {{
+    window.baInited   = true;
+    window.baQueue    = [];
+    window.baSpeaking = false;
+    window.baTok      = {{}};
+    window.baUnlocked = (localStorage.getItem('ba_unlocked') === '1');
 
-    /* pick a clear voice */
-    window._baVoice = function() {{
+    window.baGetVoice = function() {{
       let vs = window.speechSynthesis.getVoices();
       return vs.find(v =>
         v.name.includes('Zira') || v.name.includes('Samantha') ||
@@ -308,113 +304,108 @@ voice_block = f"""
       ) || vs[0] || null;
     }};
 
-    /* run next item in queue */
-    window._baRun = function() {{
-      if (window._baSpeaking || window._baQueue.length === 0) return;
-      window._baSpeaking = true;
-      let txt = window._baQueue.shift();
+    window.baRunQueue = function() {{
+      if (window.baSpeaking || window.baQueue.length === 0) return;
+      window.baSpeaking = true;
+      let txt = window.baQueue.shift();
       let u   = new SpeechSynthesisUtterance(txt);
-      u.rate   = 0.88;
+      u.rate   = 0.92;
       u.volume = 1.0;
-      let fv = window._baVoice();
+      let fv = window.baGetVoice();
       if (fv) u.voice = fv;
-      u.onend  = function() {{ window._baSpeaking = false; window._baRun(); }};
-      u.onerror= function() {{ window._baSpeaking = false; window._baRun(); }};
+      u.onend  = function() {{ window.baSpeaking = false; window.baRunQueue(); }};
+      u.onerror= function() {{ window.baSpeaking = false; window.baRunQueue(); }};
       window.speechSynthesis.speak(u);
     }};
 
-    /* enqueue with dedup */
-    window._baEnq = function(txt, tok) {{
-      if (!window._baUnlocked) return;
-      if (window._baTok[tok])  return;
-      window._baTok[tok] = true;
-      setTimeout(function() {{ delete window._baTok[tok]; }}, 30000);
-      window._baQueue.push(txt);
-      window._baRun();
+    window.baEnqueue = function(txt, tok) {{
+      if (!window.baUnlocked) return;
+      if (window.baTok[tok]) return;
+      window.baTok[tok] = true;
+      setTimeout(function() {{ delete window.baTok[tok]; }}, 30000);
+      window.baQueue.push(txt);
+      window.baRunQueue();
     }};
 
-    /* update button appearance */
-    window._baBtn = function() {{
+    window.baUpdateBtn = function() {{
       let b = document.getElementById('ba-btn');
-      let s = document.getElementById('ba-status');
       if (!b) return;
-      if (window._baUnlocked) {{
+      if (window.baUnlocked) {{
         b.style.background = '#10b981';
-        b.innerText = '✔️ VOICE ACTIVE — Listening';
-        if (s) s.innerText = 'Voice engine running';
+        b.innerText = '✔️ VOICE ACTIVE';
       }}
     }};
 
-    /* unlock — MUST be called directly from user tap (iOS requirement) */
-    window._baUnlock = function() {{
-      if (window._baUnlocked) return;   // already unlocked
-      window._baUnlocked = true;
-      localStorage.setItem('ba_unlocked', '1');
-      window._baQueue = [];
-      window._baSpeaking = false;
-      window.speechSynthesis.cancel();
-      window._baBtn();
-      /* speak welcome inside the gesture event — iOS needs this */
-      let u = new SpeechSynthesisUtterance('Voice ready. Navigation active.');
-      u.rate = 0.88; u.volume = 1.0;
-      let fv = window._baVoice();
-      if (fv) u.voice = fv;
-      u.onend  = function() {{ window._baSpeaking = false; window._baRun(); }};
-      u.onerror= function() {{ window._baSpeaking = false; window._baRun(); }};
-      window._baSpeaking = true;
-      window.speechSynthesis.speak(u);
-    }};
-
-    /* ── iOS keep-alive: resume if paused (iOS suspends after ~30s) ── */
+    /* ── Mobile keep-alive: iOS suspends speechSynthesis after ~30s ── */
     setInterval(function() {{
-      if (window._baUnlocked && window.speechSynthesis.paused) {{
+      if (window.baUnlocked && window.speechSynthesis.paused) {{
         window.speechSynthesis.resume();
       }}
     }}, 5000);
 
-    /* ── Stuck-state watchdog (Android/iOS bug: speaking flag never clears) ── */
+    /* ── Stuck-state watchdog: Android/iOS bug where speaking never clears ── */
     setInterval(function() {{
-      if (window._baSpeaking && !window.speechSynthesis.speaking &&
+      if (window.baSpeaking &&
+          !window.speechSynthesis.speaking &&
           !window.speechSynthesis.pending) {{
-        window._baSpeaking = false;
-        window._baRun();
+        window.baSpeaking = false;
+        window.baRunQueue();
       }}
     }}, 3000);
 
-    /* ── Recover from background / screen-lock ── */
+    /* ── Recover after screen-lock / background tab ── */
     document.addEventListener('visibilitychange', function() {{
-      if (!document.hidden && window._baUnlocked) {{
+      if (!document.hidden && window.baUnlocked) {{
         setTimeout(function() {{
-          window.speechSynthesis.resume();
-          window._baSpeaking = false;
-          window._baRun();
+          if (window.speechSynthesis.paused) window.speechSynthesis.resume();
+          window.baSpeaking = false;
+          window.baRunQueue();
         }}, 600);
       }}
     }});
   }}
   /* ── END ONE-TIME INIT ── */
 
-  /* Always sync button on every rerun */
-  window._baBtn();
+  /* Called by button tap — MUST be direct handler for iOS unlock */
+  window.baUnlock = function() {{
+    if (window.baUnlocked) {{ window.baUpdateBtn(); return; }}
+    window.baUnlocked = true;
+    localStorage.setItem('ba_unlocked', '1');
+    window.baQueue    = [];
+    window.baSpeaking = false;
+    window.speechSynthesis.cancel();
+    window.baUpdateBtn();
+    /* Speak welcome directly in gesture (iOS requires this) */
+    let u = new SpeechSynthesisUtterance('Voice ready. Navigation active.');
+    u.rate = 0.92; u.volume = 1.0;
+    let fv = window.baGetVoice();
+    if (fv) u.voice = fv;
+    u.onend  = function() {{ window.baSpeaking = false; window.baRunQueue(); }};
+    u.onerror= function() {{ window.baSpeaking = false; window.baRunQueue(); }};
+    window.baSpeaking = true;
+    window.speechSynthesis.speak(u);
+  }};
 
-  /* Inject current messages */
+  /* Sync button state on every rerun */
+  window.baUpdateBtn();
+
+  /* Messages injected by Python on this rerun */
   const navTxt   = {json.dumps(nav_txt)};
   const navTok   = {json.dumps(nav_tok)};
   const alertTxt = {json.dumps(alert_txt)};
   const alertTok = {json.dumps(alert_tok)};
 
   function push() {{
-    if (navTxt && navTok)     window._baEnq(navTxt, navTok);
-    if (alertTxt && alertTok) window._baEnq(alertTxt, alertTok);
+    if (navTxt && navTok)     window.baEnqueue(navTxt, navTok);
+    if (alertTxt && alertTok) window.baEnqueue(alertTxt, alertTok);
   }}
 
-  /* Chrome/mobile loads voices async */
+  /* Laptop: voices available immediately; Mobile: onvoiceschanged fires async */
   if (window.speechSynthesis.getVoices().length > 0) {{
     push();
   }} else {{
     window.speechSynthesis.onvoiceschanged = function() {{ push(); }};
-    /* fallback retry for stubborn mobile browsers */
-    setTimeout(push, 1500);
+    setTimeout(push, 1500);   /* fallback for stubborn mobile browsers */
   }}
 
 }})();
