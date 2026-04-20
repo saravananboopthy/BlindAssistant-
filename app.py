@@ -144,6 +144,7 @@ u_lng = location.get('longitude') if location else None
 
 col_v, col_c = st.columns([1.5, 1])
 
+ctx = None
 with col_v:
     if st.session_state.state["run_camera"]:
         ctx = webrtc_streamer(
@@ -212,7 +213,7 @@ with col_c:
                 st.session_state.state["last_nav_time"] = now
 
     st.divider()
-    if st.session_state.state["run_camera"] and ctx.video_processor:
+    if st.session_state.state["run_camera"] and ctx and ctx.video_processor:
         with ctx.video_processor.lock:
             objs = ctx.video_processor.detections.copy()
         if objs:
