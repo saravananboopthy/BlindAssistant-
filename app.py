@@ -225,20 +225,36 @@ with col_c:
 # ==========================================
 # MASTER SYNC VOICE QUEUE
 # ==========================================
-# Persist voice messages for a few seconds so they aren't cut off by faster reruns
-if nav_instruction or alert_instruction:
-    st.session_state.state["active_nav_voice"] = nav_instruction
-    st.session_state.state["active_alert_voice"] = alert_instruction
-    st.session_state.state["voice_expiry"] = time.time() + 8 # 8-second stability window
+# Each new nav/alert message gets a unique token so localStorage dedup works correctly
+# even when the message text is the same (e.g. same distance reminder value)
+now_ts = int(time.time())
+
+if nav_instruction:
+    token = f"{nav_instruction}||{now_ts}"
+    st.session_state.state["active_nav_voice"]  = nav_instruction
+    st.session_state.state["nav_voice_token"]   = token
+    st.session_state.state["voice_nav_expiry"]  = now_ts + 10
+
+if alert_instruction:
+    token = f"{alert_instruction}||{now_ts}"
+    st.session_state.state["active_alert_voice"]  = alert_instruction
+    st.session_state.state["alert_voice_token"]   = token
+    st.session_state.state["voice_alert_expiry"]  = now_ts + 10
 
 # Clear expired messages
-if time.time() > st.session_state.state.get("voice_expiry", 0):
+if now_ts > st.session_state.state.get("voice_nav_expiry", 0):
     st.session_state.state["active_nav_voice"] = ""
+    st.session_state.state["nav_voice_token"]  = ""
+
+if now_ts > st.session_state.state.get("voice_alert_expiry", 0):
     st.session_state.state["active_alert_voice"] = ""
+    st.session_state.state["alert_voice_token"]  = ""
 
 voice_hub = json.dumps({
-    "nav": st.session_state.state.get("active_nav_voice", ""),
-    "alert": st.session_state.state.get("active_alert_voice", "")
+    "nav":         st.session_state.state.get("active_nav_voice", ""),
+    "nav_token":   st.session_state.state.get("nav_voice_token", ""),
+    "alert":       st.session_state.state.get("active_alert_voice", ""),
+    "alert_token": st.session_state.state.get("alert_voice_token", ""),
 })
 
 html_code = """
@@ -249,57 +265,62 @@ html_code = """
     </div>
     <script>
     const vdata = VOICE_DATA_PLACEHOLDER;
-    function lck() { localStorage.setItem('v_unlocked', 'true'); update(); speakQueue("Brain synchronized. Ready."); }
-    function update() { if(localStorage.getItem('v_unlocked') === 'true') { let b = document.getElementById('vbtn'); b.style.background = "#10b981"; b.innerText = "✔️ VOICE SYNCED"; } }
-    
-    window.speechQueue = window.speechQueue || [];
-    window.isSpeakingNow = window.isSpeakingNow || false;
 
-    function processQueue() {
-        if(window.isSpeakingNow || window.speechQueue.length === 0) return;
-        window.isSpeakingNow = true;
-        let t = window.speechQueue.shift();
-        
-        let u = new SpeechSynthesisUtterance(t);
-        u.rate = 0.95; 
-        
-        // Find a Female Voice
-        let voices = window.speechSynthesis.getVoices();
-        let femaleVoice = voices.find(v => v.name.includes('Female') || v.name.includes('Zira') || v.name.includes('Samantha') || v.name.includes('Victoria') || v.name.includes('Google US English'));
-        if (femaleVoice) {
-            u.voice = femaleVoice;
+    function lck() {
+        localStorage.setItem('v_unlocked', 'true');
+        updateBtn();
+        doSpeak("Brain synchronized. Ready.", "init");
+    }
+
+    function updateBtn() {
+        if(localStorage.getItem('v_unlocked') === 'true') {
+            let b = document.getElementById('vbtn');
+            if(b) { b.style.background = "#10b981"; b.innerText = "✔️ VOICE SYNCED"; }
         }
-        
-        u.onend = function() { window.isSpeakingNow = false; processQueue(); };
-        u.onerror = function() { window.isSpeakingNow = false; processQueue(); };
+    }
+
+    function getVoice() {
+        let voices = window.speechSynthesis.getVoices();
+        return voices.find(v => v.name.includes('Zira') || v.name.includes('Samantha') ||
+                                v.name.includes('Victoria') || v.name.includes('Female') ||
+                                v.name.includes('Google US English')) || null;
+    }
+
+    function doSpeak(text, token) {
+        if(localStorage.getItem('v_unlocked') !== 'true') return;
+        // Dedup: localStorage persists across iframe reloads caused by st.rerun()
+        if(localStorage.getItem('vTok_' + token) === '1') return;
+        localStorage.setItem('vTok_' + token, '1');
+        // Expire old tokens after 30s to avoid localStorage bloat
+        setTimeout(function() { localStorage.removeItem('vTok_' + token); }, 30000);
+
+        window.speechSynthesis.cancel();
+        let u = new SpeechSynthesisUtterance(text);
+        u.rate = 0.92;
+        let fv = getVoice();
+        if(fv) u.voice = fv;
         window.speechSynthesis.speak(u);
     }
 
-    function speakQueue(t) {
-        if(localStorage.getItem('v_unlocked') !== 'true') return;
-        window.speechQueue.push(t);
-        processQueue();
-    }
-    
-    // Ensure voices are loaded (some browsers need this)
-    window.speechSynthesis.onvoiceschanged = function() {
-        // Optional: trigger a queue process if needed
-    };
-
-    update();
-    
-    if (vdata.nav || vdata.alert) {
-        const h = vdata.nav + "|" + vdata.alert;
-        if(window.lastH !== h) {
-            // Add to Voice Queue sequentially. Navigation first, then Alerts.
-            if (vdata.nav) {
-                speakQueue(vdata.nav);
-            }
-            if (vdata.alert) {
-                speakQueue(vdata.alert);
-            }
-            window.lastH = h;
+    // Wait for voices to load on first render (Chrome async issue)
+    function trySpeak() {
+        if(vdata.nav && vdata.nav_token) {
+            doSpeak(vdata.nav, vdata.nav_token);
         }
+        if(vdata.alert && vdata.alert_token) {
+            let delay = (vdata.nav && vdata.nav_token) ? 1500 : 0;
+            setTimeout(function() {
+                doSpeak(vdata.alert, vdata.alert_token);
+            }, delay);
+        }
+    }
+
+    updateBtn();
+
+    if(window.speechSynthesis.getVoices().length > 0) {
+        trySpeak();
+    } else {
+        window.speechSynthesis.onvoiceschanged = function() { trySpeak(); };
     }
     </script>
 """.replace("VOICE_DATA_PLACEHOLDER", voice_hub)
