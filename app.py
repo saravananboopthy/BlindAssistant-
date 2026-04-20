@@ -56,7 +56,10 @@ class VisionProcessor(VideoProcessorBase):
             x1, y1, x2, y2 = map(int, b.xyxy[0])
             label = model.names[int(b.cls[0])]
             pos = "left" if (x1+x2)/2 < w*0.33 else "right" if (x1+x2)/2 > w*0.66 else "ahead"
-            dist = "near" if (x2-x1) > 280 else "far"
+            width = x2 - x1
+            if width > 400: dist = "very close"
+            elif width > 200: dist = "near"
+            else: dist = "far"
             now.append({"label": label, "pos": pos, "dist": dist})
         with self.lock: self.detections = now
         return av.VideoFrame.from_ndarray(img, format="bgr24")
@@ -158,13 +161,23 @@ with col_c:
         with ctx.video_processor.lock:
             objs = ctx.video_processor.detections.copy()
         if objs:
-            st.write(", ".join([f"{o['label']} {o['pos']}" for o in objs]))
+            st.write(", ".join([f"{o['label']} at {o['pos']} ({o['dist']})" for o in objs]))
             now = time.time()
             for o in objs:
                 tag = f"{o['label']}_{o['pos']}"
                 # Universal strict 15-second cooldown
                 if tag not in st.session_state.state["obj_memory"] or now - st.session_state.state["obj_memory"][tag] > 15:
-                    alert_instruction = f"I see {o['label']} {o['pos']}"
+                    label = o['label']
+                    pos = o['pos']
+                    dist = o['dist']
+                    
+                    if pos == "left":
+                        alert_instruction = f"{label} is on your left, move right"
+                    elif pos == "right":
+                        alert_instruction = f"{label} is on your right, move left"
+                    else: # ahead
+                        alert_instruction = f"{label} is ahead, move left or right. It is {dist} from you."
+                        
                     st.session_state.state["obj_memory"][tag] = now
                     break
 
