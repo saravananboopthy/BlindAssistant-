@@ -30,12 +30,11 @@ st.markdown("""
 # Persistent State
 if "state" not in st.session_state:
     st.session_state.state = {
-        "nav_steps": [], "nav_idx": 0, "active": False, 
+        "nav_steps": [], "nav_idx": 0, "active": False,
         "last_nav_msg": "", "obj_memory": {}, "run_camera": True,
         "last_nav_time": 0,
-        "nav_voice_token": "", "alert_voice_token": "",
-        "active_nav_voice": "", "active_alert_voice": "",
-        "voice_nav_expiry": 0, "voice_alert_expiry": 0
+        "active_nav_voice": "", "nav_voice_token": "", "voice_nav_expiry": 0,
+        "active_alert_voice": "", "alert_voice_token": "", "voice_alert_expiry": 0,
     }
 
 # ==========================================
@@ -49,11 +48,10 @@ class VisionProcessor(VideoProcessorBase):
     def __init__(self):
         self.lock = threading.Lock()
         self.detections = []
-        self._frame_count = {}  # tracks consecutive frame hits per label+pos
+        self._frame_count = {}  # consecutive frame confirmation
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
-        # Confidence 0.45 — high enough to avoid false positives
         res = model(img, conf=0.45, verbose=False)[0]
         h, w, _ = img.shape
         found_this_frame = set()
@@ -61,7 +59,6 @@ class VisionProcessor(VideoProcessorBase):
         for b in res.boxes:
             x1, y1, x2, y2 = map(int, b.xyxy[0])
             bw, bh = x2 - x1, y2 - y1
-            # Skip tiny/noisy boxes (must be at least 40px wide and tall)
             if bw < 40 or bh < 40:
                 continue
             label = model.names[int(b.cls[0])]
@@ -73,15 +70,11 @@ class VisionProcessor(VideoProcessorBase):
             key = f"{label}_{pos}"
             found_this_frame.add(key)
             self._frame_count[key] = self._frame_count.get(key, 0) + 1
-            # Only include if seen in at least 2 consecutive frames
             if self._frame_count[key] >= 2:
                 candidates.append({"label": label, "pos": pos, "dist": dist})
-
-        # Reset count for labels not seen this frame
         for key in list(self._frame_count.keys()):
             if key not in found_this_frame:
                 self._frame_count[key] = 0
-
         with self.lock:
             self.detections = candidates
         return av.VideoFrame.from_ndarray(img, format="bgr24")
@@ -97,7 +90,6 @@ def calculate_dist(lat1, lon1, lat2, lon2):
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 def interpolate_waypoints(lat1, lon1, lat2, lon2, segment_m=10):
-    """Split a long GPS segment into micro-waypoints every segment_m meters."""
     total = calculate_dist(lat1, lon1, lat2, lon2)
     if total <= segment_m:
         return [{"lat": lat2, "lng": lon2, "dist_m": round(total)}]
@@ -105,9 +97,11 @@ def interpolate_waypoints(lat1, lon1, lat2, lon2, segment_m=10):
     points = []
     for i in range(1, num + 1):
         frac = i / num
-        wlat = lat1 + frac * (lat2 - lat1)
-        wlng = lon1 + frac * (lon2 - lon1)
-        points.append({"lat": wlat, "lng": wlng, "dist_m": round(total / num)})
+        points.append({
+            "lat": lat1 + frac * (lat2 - lat1),
+            "lng": lon1 + frac * (lon2 - lon1),
+            "dist_m": round(total / num)
+        })
     return points
 
 def get_walking_directions(source, dest, api_key):
@@ -120,24 +114,21 @@ def get_walking_directions(source, dest, api_key):
         prev_lat, prev_lng = source if isinstance(source, tuple) else (source[0], source[1])
         for s in leg["steps"]:
             raw = re.sub(r"<.*?>", "", s["html_instructions"]).replace("&nbsp;", " ").strip()
-            action = raw.split(',')[0]  # e.g. "Turn left" / "Head north" / "Walk"
+            action = raw.split(',')[0]
             end_lat = s["end_location"]["lat"]
             end_lng = s["end_location"]["lng"]
             waypoints = interpolate_waypoints(prev_lat, prev_lng, end_lat, end_lng, segment_m=10)
             for i, wp in enumerate(waypoints):
                 seg_m = wp["dist_m"]
-                # Short speech: "Turn left, 10 meters" / "Straight, 10 meters"
-                if i == 0:
-                    speech = f"{action}, {seg_m} meters"
-                else:
-                    speech = f"Straight, {seg_m} meters"
+                speech = f"{action}, {seg_m} meters" if i == 0 else f"Straight, {seg_m} meters"
                 micro_steps.append({
                     "text": speech, "speech": speech,
                     "lat": wp["lat"], "lng": wp["lng"], "seg_m": seg_m
                 })
             prev_lat, prev_lng = end_lat, end_lng
         return micro_steps, None
-    except Exception as e: return None, str(e)
+    except Exception as e:
+        return None, str(e)
 
 # ==========================================
 # UI
@@ -165,7 +156,7 @@ with col_v:
 with col_c:
     st.subheader("Control Center")
     api_key = st.secrets.get("GOOGLE_MAPS_API_KEY", os.getenv("GOOGLE_MAPS_API_KEY", ""))
-    
+
     st.markdown('<p class="mic-hint">💡 Tap the input below and click your phone keyboard\'s 🎤 icon to speak your destination.</p>', unsafe_allow_html=True)
     dest_in = st.text_input("Destination (Type or use phone 🎤)", placeholder="e.g. Hope College", key="dest_field")
 
@@ -177,7 +168,8 @@ with col_c:
                 if data:
                     st.session_state.state.update({"nav_steps": data, "nav_idx": 0, "active": True, "run_camera": True, "last_nav_msg": ""})
                     nav_instruction = "Navigation started. Path found."
-                else: st.error(err)
+                else:
+                    st.error(err)
     with c2:
         if st.button("🛑 STOP", type="primary", use_container_width=True):
             st.session_state.state.update({"active": False, "run_camera": False, "nav_steps": [], "nav_idx": 0})
@@ -196,23 +188,18 @@ with col_c:
             now = time.time()
             time_since_last = now - st.session_state.state["last_nav_time"]
 
-            # 1) Speak the instruction when it is new
             if cur_step['text'] != st.session_state.state["last_nav_msg"]:
                 nav_instruction = cur_step['speech']
                 st.session_state.state["last_nav_msg"] = cur_step['text']
                 st.session_state.state["last_nav_time"] = now
-
-            # 2) Auto-advance: GPS reached this micro-waypoint (within 8 meters)
             elif dist_to_wp < 8:
                 if idx < total_steps - 1:
                     st.session_state.state["nav_idx"] += 1
-                    st.session_state.state["last_nav_msg"] = ""  # force re-announce
+                    st.session_state.state["last_nav_msg"] = ""
                     st.session_state.state["last_nav_time"] = now
                 else:
                     nav_instruction = "You have arrived at your destination."
                     st.session_state.state["active"] = False
-
-            # 3) Distance reminder every 10 seconds if still walking
             elif time_since_last > 10 and dist_m > 8:
                 nav_instruction = f"{dist_m} meters remaining"
                 st.session_state.state["last_nav_time"] = now
@@ -226,38 +213,33 @@ with col_c:
             now = time.time()
             for o in objs:
                 tag = f"{o['label']}_{o['pos']}"
-                # Universal strict 15-second cooldown
                 if tag not in st.session_state.state["obj_memory"] or now - st.session_state.state["obj_memory"][tag] > 15:
                     label = o.get('label', 'object')
-                    pos = o.get('pos', 'ahead')
-                    dist = o.get('dist', 'near')
-                    
+                    pos   = o.get('pos', 'ahead')
+                    dist  = o.get('dist', 'near')
                     if pos == "left":
                         alert_instruction = f"{label} is on your left, move right"
                     elif pos == "right":
                         alert_instruction = f"{label} is on your right, move left"
-                    else: # ahead
+                    else:
                         alert_instruction = f"{label} is ahead, move left or right. It is {dist}."
-                        
                     st.session_state.state["obj_memory"][tag] = now
                     break
 
 # ==========================================
-# MASTER SYNC VOICE QUEUE  (parent-page queue — persists across reruns)
+# MASTER SYNC VOICE ENGINE
 # ==========================================
 now_ts = int(time.time())
 
 if nav_instruction:
-    tok = f"{nav_instruction}||{now_ts}"
     st.session_state.state["active_nav_voice"]  = nav_instruction
-    st.session_state.state["nav_voice_token"]   = tok
+    st.session_state.state["nav_voice_token"]   = f"n{now_ts}"
     st.session_state.state["voice_nav_expiry"]  = now_ts + 10
 
 if alert_instruction:
-    tok = f"{alert_instruction}||{now_ts}"
-    st.session_state.state["active_alert_voice"]  = alert_instruction
-    st.session_state.state["alert_voice_token"]   = tok
-    st.session_state.state["voice_alert_expiry"]  = now_ts + 10
+    st.session_state.state["active_alert_voice"] = alert_instruction
+    st.session_state.state["alert_voice_token"]  = f"a{now_ts}"
+    st.session_state.state["voice_alert_expiry"] = now_ts + 10
 
 if now_ts > st.session_state.state.get("voice_nav_expiry", 0):
     st.session_state.state["active_nav_voice"] = ""
@@ -271,149 +253,90 @@ nav_txt   = st.session_state.state.get("active_nav_voice", "")
 nav_tok   = st.session_state.state.get("nav_voice_token", "")
 alert_txt = st.session_state.state.get("active_alert_voice", "")
 alert_tok = st.session_state.state.get("alert_voice_token", "")
+combo_key = f"{nav_tok}|{alert_tok}"
 
-# --- Unified voice button + queue (works on laptop & mobile) ---
-voice_block = f"""
-<div id="ba-wrap" style="background:#f1f5f9;border:1px solid #cbd5e1;
-     padding:10px;border-radius:10px;text-align:center;margin-top:6px;">
-  <button id="ba-btn"
-    onclick="baUnlock()"
-    style="background:#ef4444;color:white;border:none;padding:12px;
+voice_html = ("""
+<div style="background:#f1f5f9;border:1px solid #cbd5e1;padding:10px;
+            border-radius:10px;text-align:center;">
+  <button id="vbtn" onclick="doUnlock()"
+    style="background:#ef4444;color:white;border:none;padding:11px;
            border-radius:8px;cursor:pointer;font-weight:bold;
            width:100%;font-size:16px;touch-action:manipulation;">
     🔊 TAP TO SYNC BRAIN &amp; VOICE 🚨
   </button>
 </div>
 <script>
-(function() {{
+(function() {
+  var NAV_TXT = __NAV_TXT__;
+  var ALT_TXT = __ALT_TXT__;
+  var COMBO   = __COMBO__;
 
-  /* ── ONE-TIME INIT: queue lives on window so it survives Streamlit reruns ── */
-  if (typeof window.baInited === 'undefined') {{
-    window.baInited   = true;
-    window.baQueue    = [];
-    window.baSpeaking = false;
-    window.baTok      = {{}};
-    window.baUnlocked = (localStorage.getItem('ba_unlocked') === '1');
+  function isUnlocked() { return localStorage.getItem('ba_unlocked') === '1'; }
+  function isSeen(k)    { return localStorage.getItem('baSp_' + k) === '1'; }
+  function markSeen(k)  {
+    localStorage.setItem('baSp_' + k, '1');
+    setTimeout(function() { localStorage.removeItem('baSp_' + k); }, 30000);
+  }
 
-    window.baGetVoice = function() {{
-      let vs = window.speechSynthesis.getVoices();
-      return vs.find(v =>
-        v.name.includes('Zira') || v.name.includes('Samantha') ||
-        v.name.includes('Victoria') || v.name.includes('Female') ||
-        v.name.includes('Google US English')
-      ) || vs[0] || null;
-    }};
+  function getVoice() {
+    var vs = window.speechSynthesis.getVoices();
+    return vs.find(function(v) {
+      return v.name.indexOf('Zira') >= 0 || v.name.indexOf('Samantha') >= 0 ||
+             v.name.indexOf('Victoria') >= 0 || v.name.indexOf('Female') >= 0 ||
+             v.name.indexOf('Google US English') >= 0;
+    }) || vs[0] || null;
+  }
 
-    window.baRunQueue = function() {{
-      if (window.baSpeaking || window.baQueue.length === 0) return;
-      window.baSpeaking = true;
-      let txt = window.baQueue.shift();
-      let u   = new SpeechSynthesisUtterance(txt);
-      u.rate   = 0.92;
-      u.volume = 1.0;
-      let fv = window.baGetVoice();
-      if (fv) u.voice = fv;
-      u.onend  = function() {{ window.baSpeaking = false; window.baRunQueue(); }};
-      u.onerror= function() {{ window.baSpeaking = false; window.baRunQueue(); }};
-      window.speechSynthesis.speak(u);
-    }};
-
-    window.baEnqueue = function(txt, tok) {{
-      if (!window.baUnlocked) return;
-      if (window.baTok[tok]) return;
-      window.baTok[tok] = true;
-      setTimeout(function() {{ delete window.baTok[tok]; }}, 30000);
-      window.baQueue.push(txt);
-      window.baRunQueue();
-    }};
-
-    window.baUpdateBtn = function() {{
-      let b = document.getElementById('ba-btn');
-      if (!b) return;
-      if (window.baUnlocked) {{
-        b.style.background = '#10b981';
-        b.innerText = '✔️ VOICE ACTIVE';
-      }}
-    }};
-
-    /* ── Mobile keep-alive: iOS suspends speechSynthesis after ~30s ── */
-    setInterval(function() {{
-      if (window.baUnlocked && window.speechSynthesis.paused) {{
-        window.speechSynthesis.resume();
-      }}
-    }}, 5000);
-
-    /* ── Stuck-state watchdog: Android/iOS bug where speaking never clears ── */
-    setInterval(function() {{
-      if (window.baSpeaking &&
-          !window.speechSynthesis.speaking &&
-          !window.speechSynthesis.pending) {{
-        window.baSpeaking = false;
-        window.baRunQueue();
-      }}
-    }}, 3000);
-
-    /* ── Recover after screen-lock / background tab ── */
-    document.addEventListener('visibilitychange', function() {{
-      if (!document.hidden && window.baUnlocked) {{
-        setTimeout(function() {{
-          if (window.speechSynthesis.paused) window.speechSynthesis.resume();
-          window.baSpeaking = false;
-          window.baRunQueue();
-        }}, 600);
-      }}
-    }});
-  }}
-  /* ── END ONE-TIME INIT ── */
-
-  /* Called by button tap — MUST be direct handler for iOS unlock */
-  window.baUnlock = function() {{
-    if (window.baUnlocked) {{ window.baUpdateBtn(); return; }}
-    window.baUnlocked = true;
-    localStorage.setItem('ba_unlocked', '1');
-    window.baQueue    = [];
-    window.baSpeaking = false;
-    window.speechSynthesis.cancel();
-    window.baUpdateBtn();
-    /* Speak welcome directly in gesture (iOS requires this) */
-    let u = new SpeechSynthesisUtterance('Voice ready. Navigation active.');
+  function speakOne(txt, then) {
+    var u = new SpeechSynthesisUtterance(txt);
     u.rate = 0.92; u.volume = 1.0;
-    let fv = window.baGetVoice();
-    if (fv) u.voice = fv;
-    u.onend  = function() {{ window.baSpeaking = false; window.baRunQueue(); }};
-    u.onerror= function() {{ window.baSpeaking = false; window.baRunQueue(); }};
-    window.baSpeaking = true;
+    var fv = getVoice(); if (fv) u.voice = fv;
+    u.onend  = then || function(){};
+    u.onerror= then || function(){};
     window.speechSynthesis.speak(u);
-  }};
+  }
 
-  /* Sync button state on every rerun */
-  window.baUpdateBtn();
+  function playMessages() {
+    if (!isUnlocked()) return;
+    if (!COMBO || COMBO === '|' || isSeen(COMBO)) return;
+    markSeen(COMBO);
+    window.speechSynthesis.cancel();
+    if (NAV_TXT) {
+      speakOne(NAV_TXT, function() {
+        if (ALT_TXT) { setTimeout(function(){ speakOne(ALT_TXT, null); }, 250); }
+      });
+    } else if (ALT_TXT) {
+      speakOne(ALT_TXT, null);
+    }
+  }
 
-  /* Messages injected by Python on this rerun */
-  const navTxt   = {json.dumps(nav_txt)};
-  const navTok   = {json.dumps(nav_tok)};
-  const alertTxt = {json.dumps(alert_txt)};
-  const alertTok = {json.dumps(alert_tok)};
+  window.doUnlock = function() {
+    localStorage.setItem('ba_unlocked', '1');
+    var b = document.getElementById('vbtn');
+    if (b) { b.style.background='#10b981'; b.innerText='✔️ VOICE SYNCED'; }
+    window.speechSynthesis.cancel();
+    speakOne('Voice ready. Navigation active.', function() { playMessages(); });
+  };
 
-  function push() {{
-    if (navTxt && navTok)     window.baEnqueue(navTxt, navTok);
-    if (alertTxt && alertTok) window.baEnqueue(alertTxt, alertTok);
-  }}
+  if (isUnlocked()) {
+    var b = document.getElementById('vbtn');
+    if (b) { b.style.background='#10b981'; b.innerText='✔️ VOICE SYNCED'; }
+  }
 
-  /* Laptop: voices available immediately; Mobile: onvoiceschanged fires async */
-  if (window.speechSynthesis.getVoices().length > 0) {{
-    push();
-  }} else {{
-    window.speechSynthesis.onvoiceschanged = function() {{ push(); }};
-    setTimeout(push, 1500);   /* fallback for stubborn mobile browsers */
-  }}
-
-}})();
+  if (window.speechSynthesis.getVoices().length > 0) {
+    playMessages();
+  } else {
+    window.speechSynthesis.onvoiceschanged = function() { playMessages(); };
+    setTimeout(playMessages, 1500);
+  }
+})();
 </script>
-"""
-st.markdown(voice_block, unsafe_allow_html=True)
+""".replace("__NAV_TXT__", json.dumps(nav_txt))
+   .replace("__ALT_TXT__", json.dumps(alert_txt))
+   .replace("__COMBO__",   json.dumps(combo_key)))
+
+st.components.v1.html(voice_html, height=70)
 
 if st.session_state.state["active"] or st.session_state.state["run_camera"]:
     time.sleep(1.2)
     st.rerun()
-
