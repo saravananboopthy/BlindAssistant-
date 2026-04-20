@@ -67,26 +67,57 @@ class VisionProcessor(VideoProcessorBase):
 # ==========================================
 # NAVIGATION LOGIC
 # ==========================================
+def calculate_dist(lat1, lon1, lat2, lon2):
+    R = 6371000
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
+    a = math.sin(dp/2)**2 + math.cos(p1) * math.cos(p2) * math.sin(dl/2)**2
+    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+def interpolate_waypoints(lat1, lon1, lat2, lon2, segment_m=10):
+    """Split a long GPS segment into micro-waypoints every segment_m meters."""
+    total = calculate_dist(lat1, lon1, lat2, lon2)
+    if total <= segment_m:
+        return [{"lat": lat2, "lng": lon2, "dist_m": round(total)}]
+    num = max(1, int(total / segment_m))
+    points = []
+    for i in range(1, num + 1):
+        frac = i / num
+        wlat = lat1 + frac * (lat2 - lat1)
+        wlng = lon1 + frac * (lon2 - lon1)
+        points.append({"lat": wlat, "lng": wlng, "dist_m": round(total / num)})
+    return points
+
 def get_walking_directions(source, dest, api_key):
     try:
         gmaps = googlemaps.Client(key=api_key)
         res = gmaps.directions(source, dest, mode="walking")
         if not res: return None, "No route found."
         leg = res[0]["legs"][0]
-        steps = []
+        micro_steps = []
+        prev_lat, prev_lng = source if isinstance(source, tuple) else (source[0], source[1])
         for s in leg["steps"]:
-            instr = re.sub(r"<.*?>", "", s["html_instructions"]).replace("&nbsp;", " ").strip()
-            # Clean for speech: only take the part before any comma or city name
-            speech_instr = instr.split(',')[0]
-            steps.append({"text": instr, "speech": speech_instr, "lat": s["end_location"]["lat"], "lng": s["end_location"]["lng"]})
-        return steps, None
+            raw = re.sub(r"<.*?>", "", s["html_instructions"]).replace("&nbsp;", " ").strip()
+            action = raw.split(',')[0]  # e.g. "Turn left" / "Head north" / "Walk"
+            end_lat = s["end_location"]["lat"]
+            end_lng = s["end_location"]["lng"]
+            waypoints = interpolate_waypoints(prev_lat, prev_lng, end_lat, end_lng, segment_m=10)
+            for i, wp in enumerate(waypoints):
+                seg_m = wp["dist_m"]
+                if i == 0:
+                    speech = f"{action} for {seg_m} meters"
+                else:
+                    speech = f"Continue straight for {seg_m} meters"
+                micro_steps.append({
+                    "text": speech,
+                    "speech": speech,
+                    "lat": wp["lat"],
+                    "lng": wp["lng"],
+                    "seg_m": seg_m
+                })
+            prev_lat, prev_lng = end_lat, end_lng
+        return micro_steps, None
     except Exception as e: return None, str(e)
-
-def calculate_dist(lat1, lon1, lat2, lon2):
-    R = 6371000
-    p1, p2 = math.radians(lat1), math.radians(lat2); dp, dl = math.radians(lat2-lat1), math.radians(lon2-lon1)
-    a = math.sin(dp/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2
-    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
 # ==========================================
 # UI
@@ -137,24 +168,34 @@ with col_c:
         idx = st.session_state.state["nav_idx"]
         if idx < len(steps):
             cur_step = steps[idx]
-            dist = calculate_dist(u_lat, u_lng, cur_step['lat'], cur_step['lng'])
-            st.success(f"**Action:** {cur_step['text']}")
-            
+            dist_to_wp = calculate_dist(u_lat, u_lng, cur_step['lat'], cur_step['lng'])
+            dist_m = int(dist_to_wp)
+            total_steps = len(steps)
+            st.success(f"**Step {idx+1}/{total_steps}:** {cur_step['text']} | 📍 {dist_m}m away")
+
             now = time.time()
-            
-            # 1) Speak the navigation instruction if it hasn't been spoken yet
+            time_since_last = now - st.session_state.state["last_nav_time"]
+
+            # 1) Speak the instruction when it is new
             if cur_step['text'] != st.session_state.state["last_nav_msg"]:
                 nav_instruction = cur_step['speech']
                 st.session_state.state["last_nav_msg"] = cur_step['text']
                 st.session_state.state["last_nav_time"] = now
-                
-            # 2) Live GPS advance logic: Check if we arrived at the current step's physical location
-            elif dist < 12 and (now - st.session_state.state["last_nav_time"]) > 15:
-                if st.session_state.state["nav_idx"] < len(steps) - 1:
+
+            # 2) Auto-advance: GPS reached this micro-waypoint (within 8 meters)
+            elif dist_to_wp < 8:
+                if idx < total_steps - 1:
                     st.session_state.state["nav_idx"] += 1
+                    st.session_state.state["last_nav_msg"] = ""  # force re-announce
+                    st.session_state.state["last_nav_time"] = now
                 else:
-                    nav_instruction = "Arrived at destination"
+                    nav_instruction = "You have arrived at your destination."
                     st.session_state.state["active"] = False
+
+            # 3) Distance reminder every 10 seconds if still walking
+            elif time_since_last > 10 and dist_m > 8:
+                nav_instruction = f"{dist_m} meters remaining"
+                st.session_state.state["last_nav_time"] = now
 
     st.divider()
     if st.session_state.state["run_camera"] and ctx.video_processor:
