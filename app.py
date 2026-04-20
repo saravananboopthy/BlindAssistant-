@@ -32,7 +32,7 @@ if "state" not in st.session_state:
     st.session_state.state = {
         "nav_steps": [], "nav_idx": 0, "active": False, 
         "last_nav_msg": "", "obj_memory": {}, "run_camera": True,
-        "last_nav_time": 0
+        "last_nav_time": 0, "active_nav_voice": "", "active_alert_voice": "", "voice_expiry": 0
     }
 
 # ==========================================
@@ -167,16 +167,16 @@ with col_c:
                 tag = f"{o['label']}_{o['pos']}"
                 # Universal strict 15-second cooldown
                 if tag not in st.session_state.state["obj_memory"] or now - st.session_state.state["obj_memory"][tag] > 15:
-                    label = o['label']
-                    pos = o['pos']
-                    dist = o['dist']
+                    label = o.get('label', 'object')
+                    pos = o.get('pos', 'ahead')
+                    dist = o.get('dist', 'near')
                     
                     if pos == "left":
                         alert_instruction = f"{label} is on your left, move right"
                     elif pos == "right":
                         alert_instruction = f"{label} is on your right, move left"
                     else: # ahead
-                        alert_instruction = f"{label} is ahead, move left or right. It is {dist} from you."
+                        alert_instruction = f"{label} is ahead, move left or right. It is {dist}."
                         
                     st.session_state.state["obj_memory"][tag] = now
                     break
@@ -184,7 +184,21 @@ with col_c:
 # ==========================================
 # MASTER SYNC VOICE QUEUE
 # ==========================================
-voice_hub = json.dumps({"nav": nav_instruction, "alert": alert_instruction})
+# Persist voice messages for a few seconds so they aren't cut off by faster reruns
+if nav_instruction or alert_instruction:
+    st.session_state.state["active_nav_voice"] = nav_instruction
+    st.session_state.state["active_alert_voice"] = alert_instruction
+    st.session_state.state["voice_expiry"] = time.time() + 8 # 8-second stability window
+
+# Clear expired messages
+if time.time() > st.session_state.state.get("voice_expiry", 0):
+    st.session_state.state["active_nav_voice"] = ""
+    st.session_state.state["active_alert_voice"] = ""
+
+voice_hub = json.dumps({
+    "nav": st.session_state.state.get("active_nav_voice", ""),
+    "alert": st.session_state.state.get("active_alert_voice", "")
+})
 
 components.html(f"""
     <div style="background:#f1f5f9; border:1px solid #cbd5e1; padding:10px; border-radius:10px; text-align:center;">
@@ -236,7 +250,7 @@ components.html(f"""
     if (vdata.nav || vdata.alert) {{
         const h = vdata.nav + "|" + vdata.alert;
         if(window.lastH !== h) {{
-            // Add to Voice Queue sequentially. Navigation first, then Alerts line-by-line.
+            // Add to Voice Queue sequentially. Navigation first, then Alerts.
             if (vdata.nav) {{
                 speakQueue(vdata.nav);
             }}
@@ -247,7 +261,7 @@ components.html(f"""
         }}
     }}
     </script>
-""", height=85)
+""", height=85, key="voice_engine_stable")
 
 if st.session_state.state["active"] or st.session_state.state["run_camera"]:
     time.sleep(1.2)
